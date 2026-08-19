@@ -17,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -137,12 +138,19 @@ private fun StatusCard(state: HomeUiState, onReconnect: () -> Unit) {
         // Degraded is a warning, not information: something is collecting less than it
         // should, which is not the same as the daemon being gone.
         RuntimeStatus.Degraded -> colors.warningContainer
-        else -> colors.surfaceVariant
+        // Unspecified, not `surfaceVariant`: under Material Expressive the page itself is
+        // painted `surfaceContainer`, which is exactly what that role resolves to — so the
+        // healthy card came out the same colour as the page behind it and read as having no
+        // card at all. Left to the library, it gets whichever container the active style uses
+        // for every other card on the page, which is the point.
+        else -> Color.Unspecified
     }
     val content = when (state.runtimeStatus) {
         RuntimeStatus.Unreachable -> colors.onErrorContainer
         RuntimeStatus.Degraded -> colors.onWarningContainer
-        else -> colors.onSurface
+        // Follows the container: the card resolves its own content colour into
+        // LocalContentColor, and Text treats Unspecified as "use that".
+        else -> Color.Unspecified
     }
     // The badge carries the state's colour when the card itself does not.
     val accent = when (state.runtimeStatus) {
