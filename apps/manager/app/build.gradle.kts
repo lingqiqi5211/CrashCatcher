@@ -24,16 +24,11 @@ val keystoreProperties = Properties().apply {
 val hasReleaseKey = keystoreProperties.getProperty("storeFile") != null
 
 /**
- * The release version, from the repository's `version.properties`.
+ * The release version name, from the repository's `version.properties`.
  *
  * Shared with `cch-packager`, which writes the same value into `module.prop`, so the APK
- * and the module it is pinned to always report the same version. Hardcoding it here is
- * how the two drift.
- *
- * `versionCode` is derived rather than tracked separately: it has to increase for every
- * release Android will accept as an update, and a second hand-maintained number is a
- * second thing to forget. `0.1.0` becomes 10000, `1.2.3` becomes 10203 — monotonic as
- * long as minor and patch stay below 100, which is checked below rather than assumed.
+ * and the module it is pinned to always report the same version. Hardcoding it here is how
+ * the two drift.
  */
 val releaseVersion: String = Properties().apply {
     val file = rootProject.file("../../version.properties")
@@ -41,17 +36,21 @@ val releaseVersion: String = Properties().apply {
     file.inputStream().use { load(it) }
 }.getProperty("version") ?: error("version.properties has no `version`")
 
-val releaseVersionCode: Int = run {
-    val parts = releaseVersion.split('.').map {
-        it.toIntOrNull() ?: error("version `$releaseVersion` is not major.minor.patch")
-    }
-    require(parts.size == 3) { "version `$releaseVersion` is not major.minor.patch" }
-    val (major, minor, patch) = parts
-    require(minor < 100 && patch < 100) {
-        "version `$releaseVersion` overflows the versionCode encoding (minor/patch < 100)"
-    }
-    major * 10_000 + minor * 100 + patch
-}
+/**
+ * `versionCode` is the commit count.
+ *
+ * It only has to increase, and the commit count already does — deriving it means there is
+ * no second number to bump and no way to publish an update Android refuses because someone
+ * forgot. It also makes every build identifiable: `r412` names the exact commit the APK
+ * came from, which matters for a build posted to a channel rather than tagged.
+ *
+ * `providers.exec` rather than a plain `exec {}` so the value is a build input the
+ * configuration cache can track. **A shallow clone counts 1** — CI must check out with
+ * `fetch-depth: 0`, or every build would claim to be the first.
+ */
+val releaseVersionCode: Int = providers.exec {
+    commandLine("git", "rev-list", "--count", "HEAD")
+}.standardOutput.asText.map { it.trim().toIntOrNull() ?: 1 }.getOrElse(1)
 
 android {
     namespace = "io.github.lingqiqi5211.crashcatcher"

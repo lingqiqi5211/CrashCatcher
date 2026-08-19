@@ -435,34 +435,14 @@ fn create_zip(root: &Path, output: &Path) -> Result<(), PackagerError> {
 
 /// Writes the repository's version into the staged `module.prop`.
 ///
-/// The template carries whatever was last committed, which is one more place for the
-/// module and the manager to disagree — and a root manager showing 0.1.0 next to an about
-/// page showing 0.2.0 gives the user no way to tell which half is stale. Both halves read
-/// `version.properties` instead: the manager's Gradle build for its versionName, this for
-/// `version` and `versionCode`.
-///
-/// `versionCode` is derived the same way Gradle derives it (major*10000 + minor*100 +
-/// patch), so the two numbers stay comparable.
+/// The template carries whatever was last committed, which is one more place for the module
+/// and the manager to disagree — and a root manager showing 0.1.0 next to an about page
+/// showing 0.2.0 gives the user no way to tell which half is stale. Both halves read
+/// `version.properties` for the name, and both derive `versionCode` from the commit count,
+/// so the two numbers are the same number.
 fn stamp_version(workspace: &Path, module_prop: &Path) -> Result<(), PackagerError> {
     let version = repository_version(workspace)?;
-    let parts: Vec<u32> = version
-        .split('.')
-        .map(|part| part.parse::<u32>().ok())
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| {
-            PackagerError::Arguments(format!("version `{version}` is not major.minor.patch"))
-        })?;
-    let [major, minor, patch] = parts.as_slice() else {
-        return Err(PackagerError::Arguments(format!(
-            "version `{version}` is not major.minor.patch"
-        )));
-    };
-    if *minor >= 100 || *patch >= 100 {
-        return Err(PackagerError::Arguments(format!(
-            "version `{version}` overflows the versionCode encoding (minor/patch < 100)"
-        )));
-    }
-    let code = major * 10_000 + minor * 100 + patch;
+    let code = commit_count(workspace);
 
     let original = fs::read_to_string(module_prop)?;
     let rewritten: String = original
@@ -476,6 +456,23 @@ fn stamp_version(workspace: &Path, module_prop: &Path) -> Result<(), PackagerErr
         .join("\n");
     fs::write(module_prop, format!("{rewritten}\n"))?;
     Ok(())
+}
+
+/// The commit count, which is what both halves use as `versionCode`.
+///
+/// Falls back to 1 when git cannot answer — a source tarball with no history, say. **A
+/// shallow clone answers 1 too**, which is why CI checks out with full history; without it
+/// every build would ship as the first one.
+fn commit_count(workspace: &Path) -> u32 {
+    Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(workspace)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(1)
 }
 
 /// `version` from the repository's `version.properties`.
