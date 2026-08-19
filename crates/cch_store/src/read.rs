@@ -18,6 +18,8 @@ pub struct PackageRollup {
     pub package_name: String,
     pub user_id: i32,
     pub is_system_app: bool,
+    /// False when this "package" is a platform process; see `GroupSummary::package_installed`.
+    pub package_installed: bool,
     pub group_count: u64,
     pub occurrence: u64,
     pub last_seen_ms: i64,
@@ -522,6 +524,7 @@ impl Store {
     pub fn package_rollups(
         &self,
         include_system_apps: bool,
+        include_system_processes: bool,
         limit: u32,
     ) -> Result<Vec<PackageRollup>, StoreError> {
         let effective_limit = if limit == 0 {
@@ -532,24 +535,37 @@ impl Store {
 
         let connection = self.connection()?;
         let mut statement = connection.prepare(
+            // MIN over `package_installed`: one row saying "not an app" is enough, since the
+            // groups under a platform process's path can only ever be that process.
+            // Two exclusions, matching the crash list's: a platform process is flagged as a
+            // system app as well, so one switch could not separate them.
             "SELECT package_name, user_id, MAX(is_system_app), COUNT(*), SUM(occurrence),
-                    MAX(last_seen_ms)
+                    MAX(last_seen_ms), MIN(package_installed)
              FROM crash_group
-             WHERE (?1 = 1 OR is_system_app = 0)
+             WHERE (?1 = 1 OR NOT (is_system_app = 1 AND package_installed = 1))
+               AND (?2 = 1 OR package_installed = 1)
              GROUP BY package_name, user_id
              ORDER BY MAX(last_seen_ms) DESC
-             LIMIT ?2",
+             LIMIT ?3",
         )?;
-        let rows = statement.query_map(params![include_system_apps, effective_limit], |row| {
-            Ok(PackageRollup {
-                package_name: row.get(0)?,
-                user_id: row.get(1)?,
-                is_system_app: row.get(2)?,
-                group_count: row.get::<_, i64>(3)?.max(0) as u64,
-                occurrence: row.get::<_, i64>(4)?.max(0) as u64,
-                last_seen_ms: row.get(5)?,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![
+                include_system_apps,
+                include_system_processes,
+                effective_limit
+            ],
+            |row| {
+                Ok(PackageRollup {
+                    package_name: row.get(0)?,
+                    user_id: row.get(1)?,
+                    is_system_app: row.get(2)?,
+                    group_count: row.get::<_, i64>(3)?.max(0) as u64,
+                    occurrence: row.get::<_, i64>(4)?.max(0) as u64,
+                    last_seen_ms: row.get(5)?,
+                    package_installed: row.get(6)?,
+                })
+            },
+        )?;
 
         let mut rollups = Vec::new();
         for row in rows {
@@ -1098,7 +1114,10 @@ mod tests {
             .insert_default(&other_fingerprint)
             .expect("second group");
 
-        let rollups = store.store.package_rollups(true, 0).expect("rolls up");
+        let rollups = store
+            .store
+            .package_rollups(true, true, 0)
+            .expect("rolls up");
         let entry = rollups
             .iter()
             .find(|entry| entry.package_name == "com.example.app")
@@ -1120,17 +1139,57 @@ mod tests {
         assert!(
             store
                 .store
-                .package_rollups(false, 0)
+                .package_rollups(false, false, 0)
                 .expect("rolls up")
                 .is_empty()
         );
         assert_eq!(
             store
                 .store
-                .package_rollups(true, 0)
+                .package_rollups(true, false, 0)
                 .expect("rolls up")
                 .len(),
             1
+        );
+    }
+
+    /// The two switches are independent: a system app is not a platform process, and asking for
+    /// one must not drag in the other.
+    #[test]
+    fn package_rollups_separate_system_apps_from_platform_processes() {
+        let store = TestStore::new();
+
+        let mut system = java_record(1_000);
+        system.is_system_app = true;
+        system.package_name = "com.android.systemui".to_owned();
+        system.process_name = "com.android.systemui".to_owned();
+        store.insert_default(&system).expect("system app");
+
+        let mut process = java_record(2_000);
+        process.is_system_app = true;
+        process.package_installed = false;
+        process.package_name = "/vendor/bin/hw/some.hal".to_owned();
+        process.process_name = "/vendor/bin/hw/some.hal".to_owned();
+        store.insert_default(&process).expect("platform process");
+
+        let names = |apps: bool, processes: bool| -> Vec<String> {
+            let mut names: Vec<String> = store
+                .store
+                .package_rollups(apps, processes, 0)
+                .expect("rolls up")
+                .into_iter()
+                .map(|rollup| rollup.package_name)
+                .collect();
+            names.sort();
+            names
+        };
+
+        assert!(names(false, false).is_empty());
+        assert_eq!(names(true, false), ["com.android.systemui"]);
+        assert_eq!(names(false, true), ["/vendor/bin/hw/some.hal"]);
+        assert_eq!(
+            names(true, true),
+            ["/vendor/bin/hw/some.hal", "com.android.systemui"]
         );
     }
 }

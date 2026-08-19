@@ -481,6 +481,7 @@ fn spawn_events_loop(
         .spawn(move || {
             use cch_logd::{
                 AndroidLogReader, LogBuffer, parse_activity_event, parse_event_payload,
+                parse_screen_event,
             };
             let mut reader = match AndroidLogReader::open(LogBuffer::Events) {
                 Ok(reader) => reader,
@@ -494,9 +495,28 @@ fn spawn_events_loop(
                     Ok(entry) => {
                         let at_ms = i64::from(entry.seconds) * 1_000
                             + i64::from(entry.nanoseconds / 1_000_000);
-                        if let Ok(event) =
-                            parse_event_payload(entry.payload).and_then(parse_activity_event)
-                        {
+                        let Ok(record) = parse_event_payload(entry.payload) else {
+                            continue;
+                        };
+                        // This buffer is also the only place the daemon can see the screen
+                        // being unlocked, which is what `MuteScope::UntilUnlock` expires on.
+                        if let Some(screen) = parse_screen_event(&record) {
+                            match core.clear_unlock_mutes() {
+                                Ok(cleared) if cleared > 0 => {
+                                    tracing::info!(
+                                        ?screen,
+                                        cleared,
+                                        "released the until-unlock mutes"
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    warn!(%error, "could not clear the until-unlock mutes");
+                                }
+                            }
+                            continue;
+                        }
+                        if let Ok(event) = parse_activity_event(record) {
                             let fragment = fragment_from_activity(event, at_ms);
                             if sender.send(fragment).is_err() {
                                 break;
@@ -566,6 +586,27 @@ fn spawn_crash_loop(
         })
 }
 
+/// What an `am_crash` event is actually reporting.
+///
+/// Not every one is a Java exception. `NativeCrashListener` builds a `CrashInfo` for a native
+/// crash too and hands it to the same activity-manager path, with this exact class name and
+/// `strsignal()` as the message — so a segfault arrives here as `Native crash` / `Aborted`.
+///
+/// Filing those as Java was visible twice over. The row said "Java" next to a title reading
+/// "Native crash", and because [`cch_merge`] only merges fragments that agree on the kind, the
+/// tombstone for the same crash could not join it: one crash, listed twice, once mislabelled.
+#[cfg(any(target_os = "android", test))]
+const AM_CRASH_NATIVE_CLASS: &str = "Native crash";
+
+#[cfg(any(target_os = "android", test))]
+fn kind_of_am_crash(exception_class: &str) -> CrashKind {
+    if exception_class == AM_CRASH_NATIVE_CLASS {
+        CrashKind::NativeCrash
+    } else {
+        CrashKind::JavaException
+    }
+}
+
 #[cfg(any(target_os = "android", test))]
 fn fragment_from_activity(event: ActivityEvent, happened_at_ms: i64) -> CrashFragment {
     match event {
@@ -573,7 +614,7 @@ fn fragment_from_activity(event: ActivityEvent, happened_at_ms: i64) -> CrashFra
             let mut fragment = CrashFragment::new(
                 SourceMask::EVENTS,
                 EvidenceQuality::Structured,
-                CrashKind::JavaException,
+                kind_of_am_crash(&event.exception_class),
                 event.process_name.clone(),
                 event.pid,
                 happened_at_ms,
@@ -638,6 +679,37 @@ mod tests {
         assert_eq!(fragment.package_name.as_deref(), Some("com.example"));
         assert_eq!(fragment.user_id, Some(10));
         assert_eq!(fragment.kind, CrashKind::Anr);
+    }
+
+    fn am_crash(exception_class: &str, message: &str) -> CrashFragment {
+        fragment_from_activity(
+            ActivityEvent::Crash(cch_logd::AmCrashEvent {
+                user_id: 0,
+                pid: 42,
+                process_name: "com.example:ijkservice".to_owned(),
+                flags: 0,
+                exception_class: exception_class.to_owned(),
+                message: message.to_owned(),
+                file: "unknown".to_owned(),
+                line: 0,
+                recoverable: false,
+            }),
+            1_000,
+        )
+    }
+
+    /// The shape `NativeCrashListener` produces. Read as a Java exception it gave a row titled
+    /// "Native crash" badged "Java", and kept the tombstone from merging into it.
+    #[test]
+    fn an_am_crash_can_be_reporting_a_native_crash() {
+        assert_eq!(
+            am_crash("Native crash", "Aborted").kind,
+            CrashKind::NativeCrash
+        );
+        assert_eq!(
+            am_crash("java.lang.NullPointerException", "boom").kind,
+            CrashKind::JavaException
+        );
     }
 
     #[test]

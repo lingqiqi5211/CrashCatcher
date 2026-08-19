@@ -80,6 +80,17 @@ pub struct CrashRecord {
     pub app_version_name: Option<String>,
     pub app_version_code: Option<i64>,
     pub is_system_app: bool,
+    /// Whether `package_name` names an installed package at all.
+    ///
+    /// A tombstone's package name is its process name, so a platform binary arrives here as
+    /// `/vendor/bin/hw/android.hardware.audio.service_64` or a bare `surfaceflinger`. Those are
+    /// not apps, and the package manager can say nothing about them — which is exactly why the
+    /// distinction has to be carried: "is this a system app?" is unanswerable for a process that
+    /// has no package, and defaulting it to false let platform crashes past the
+    /// `include_system_apps` filter.
+    ///
+    /// Defaults to true so a record whose origin could not be established is still kept.
+    pub package_installed: bool,
     /// `None` when no collector could establish it; see the design note on
     /// foreground determination.
     pub is_foreground: Option<bool>,
@@ -175,6 +186,7 @@ mod tests {
             app_version_name: Some("1.4.2".to_owned()),
             app_version_code: Some(10_402),
             is_system_app: false,
+            package_installed: true,
             is_foreground: Some(true),
             self_handled: false,
             dropped_count: None,

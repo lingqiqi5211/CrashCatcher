@@ -55,7 +55,9 @@ public final class CrashCatcherBridge {
             }
             Context context = systemContext();
             dropToSystemUid();
-            new CrashCatcherBridge(context, parsed.socketName, parsed.managerPackage).runForever();
+            CrashCatcherBridge bridge =
+                    new CrashCatcherBridge(context, parsed.socketName, parsed.managerPackage);
+            bridge.runForever();
         } catch (Throwable error) {
             Log.e(TAG, "bridge initialization failed", error);
             throw new IllegalStateException("bridge initialization failed", error);

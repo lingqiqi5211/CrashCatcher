@@ -10,7 +10,7 @@ use cch_daemond::{
 use cch_store::Store;
 use cch_wire::BRIDGE_SOCKET_NAME;
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 const MANAGER_PACKAGE: &str = "io.github.lingqiqi5211.crashcatcher";
 
@@ -32,6 +32,7 @@ fn main() -> Result<(), MainError> {
         bridge,
     );
     core.clear_volatile_mutes().map_err(MainError::Wire)?;
+    complete_package_index(Arc::clone(&core));
 
     let servers = DaemonServers::start(Arc::clone(&core), pin)?;
     let bridge_spec = BridgeProcessSpec::android_defaults(
@@ -50,6 +51,51 @@ fn main() -> Result<(), MainError> {
     servers.wait()?;
     Ok(())
 }
+
+/// Rebuilds the package index once PackageManager is answering.
+///
+/// The daemon starts from the module's boot script, well before `system_server` is up, so the
+/// first index is built from `packages.list` alone: `cmd package` fails, leaving no APK paths
+/// and no system flags. Every app then looks like a third-party one, which is what let platform
+/// crashes into a list filtered to exclude them — and without this it would stay that way until
+/// something else happened to reload the index.
+///
+/// On its own thread, and giving up after [`INDEX_RETRY_LIMIT`] tries: this is an improvement
+/// on the first index, not a prerequisite for collecting.
+fn complete_package_index(core: Arc<DaemonCore>) {
+    if core.package_flags_known() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("ct-package-index".to_owned())
+        .spawn(move || {
+            for _ in 0..INDEX_RETRY_LIMIT {
+                std::thread::sleep(INDEX_RETRY_INTERVAL);
+                let Ok(index) = load_package_index() else {
+                    continue;
+                };
+                if !index.system_flags_known() {
+                    continue;
+                }
+                let packages = index.entries().len();
+                if let Err(error) = core.replace_packages(index) {
+                    warn!(%error, "could not install the completed package index");
+                    return;
+                }
+                info!(packages, "package index completed from PackageManager");
+                return;
+            }
+            warn!("PackageManager never answered; system apps stay identified by APK path only");
+        });
+    if let Err(error) = spawned {
+        warn!(%error, "could not start the package-index retry");
+    }
+}
+
+/// Long enough that the retries span a slow boot, short enough to be done before a user opens
+/// the manager: 60 × 2s covers two minutes.
+const INDEX_RETRY_LIMIT: u32 = 60;
+const INDEX_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug)]
 struct Arguments {

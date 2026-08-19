@@ -4,6 +4,8 @@ use crate::{Cursor, ParseError};
 
 pub const AM_ANR_TAG: i32 = 30_008;
 pub const AM_CRASH_TAG: i32 = 30_039;
+pub const WM_SET_KEYGUARD_SHOWN_TAG: i32 = 30_067;
+pub const SCREEN_TOGGLED_TAG: i32 = 70_000;
 
 const EVENT_TYPE_INT: u8 = 0;
 const EVENT_TYPE_LONG: u8 = 1;
@@ -58,6 +60,60 @@ pub struct AmAnrEvent {
 pub enum ActivityEvent {
     Crash(AmCrashEvent),
     Anr(AmAnrEvent),
+}
+
+/// Something in the events buffer that ends a "muted until unlock" window.
+///
+/// Read from the events buffer because the privileged bridge cannot deliver it:
+/// `registerReceiver` on a bare `app_process`'s reflected system context returns without
+/// registering anything — the process never attached an `ApplicationThread` to the activity
+/// manager, so `dumpsys activity broadcasts` lists no receiver for it and `ACTION_USER_PRESENT`
+/// has nowhere to arrive. The events buffer is already open for crashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenEvent {
+    /// Keyguard stopped showing, so the user is past the lock screen.
+    Unlocked,
+    /// The display went off; reaching the device again has to pass the lock screen.
+    ScreenOff,
+}
+
+/// Recognises the two events above, and `None` for everything else.
+///
+/// Screen-on and keyguard-appeared deliberately return `None`: waking a locked phone is not
+/// the user getting back to it.
+pub fn parse_screen_event(record: &EventRecord) -> Option<ScreenEvent> {
+    match record.tag {
+        // `(screen_state|1|5)` — a bare int, not a list, because it is a single field.
+        SCREEN_TOGGLED_TAG => match record.value {
+            EventValue::Int(0) => Some(ScreenEvent::ScreenOff),
+            _ => None,
+        },
+        WM_SET_KEYGUARD_SHOWN_TAG => keyguard_showing(&record.value)
+            .and_then(|showing| (!showing).then_some(ScreenEvent::Unlocked)),
+        _ => None,
+    }
+}
+
+/// Reads `keyguardShowing`, whose position moved between releases.
+///
+/// Android 11 logs `(keyguardShowing),(aodShowing),(Reason)`, 12 inserts
+/// `(keyguardGoingAway)`, and 14 both prepends `(Display Id)` and adds `(occluded)`. Every
+/// shape ends with the reason string, so the field count is the only thing that tells them
+/// apart; an unrecognised one gives up rather than guessing, which leaves the mute in place.
+fn keyguard_showing(value: &EventValue) -> Option<bool> {
+    let EventValue::List(values) = value else {
+        return None;
+    };
+    let index = match values.len() {
+        3 | 4 => 0,
+        6 => 1,
+        _ => return None,
+    };
+    match values.get(index)? {
+        EventValue::Int(showing) => Some(*showing != 0),
+        _ => None,
+    }
 }
 
 pub fn parse_event_payload(bytes: &[u8]) -> Result<EventRecord, ParseError> {
@@ -249,6 +305,82 @@ mod tests {
 
         let parsed = parse_activity_event(parse_event_payload(&bytes).unwrap()).unwrap();
         assert!(matches!(parsed, ActivityEvent::Anr(event) if event.pid == 99));
+    }
+
+    /// The six-field shape as logged by the device this was traced on:
+    /// `wm_set_keyguard_shown: [0,0,0,1,0,setKeyguardShown]` right after a real unlock.
+    fn keyguard_shown(fields: &[i32]) -> EventRecord {
+        let mut bytes = WM_SET_KEYGUARD_SHOWN_TAG.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[EVENT_TYPE_LIST, (fields.len() + 1) as u8]);
+        for field in fields {
+            int(*field, &mut bytes);
+        }
+        string("setKeyguardShown", &mut bytes);
+        parse_event_payload(&bytes).unwrap()
+    }
+
+    fn screen_toggled(state: i32) -> EventRecord {
+        let mut bytes = SCREEN_TOGGLED_TAG.to_le_bytes().to_vec();
+        int(state, &mut bytes);
+        parse_event_payload(&bytes).unwrap()
+    }
+
+    #[test]
+    fn keyguard_going_away_is_an_unlock_on_every_field_layout() {
+        // Android 14+: the display id shifts `keyguardShowing` to index 1.
+        assert_eq!(
+            parse_screen_event(&keyguard_shown(&[0, 0, 0, 1, 0])),
+            Some(ScreenEvent::Unlocked)
+        );
+        // Android 12: keyguardShowing, aodShowing, keyguardGoingAway.
+        assert_eq!(
+            parse_screen_event(&keyguard_shown(&[0, 0, 1])),
+            Some(ScreenEvent::Unlocked)
+        );
+        // Android 11: keyguardShowing, aodShowing.
+        assert_eq!(
+            parse_screen_event(&keyguard_shown(&[0, 0])),
+            Some(ScreenEvent::Unlocked)
+        );
+    }
+
+    #[test]
+    fn keyguard_appearing_does_not_end_a_mute() {
+        // The same unlock also logs showing=1 twice while the lock screen is still up.
+        assert_eq!(parse_screen_event(&keyguard_shown(&[0, 1, 1, 0, 0])), None);
+        assert_eq!(parse_screen_event(&keyguard_shown(&[0, 1, 0, 1, 0])), None);
+    }
+
+    #[test]
+    fn an_unknown_field_layout_leaves_the_mute_alone() {
+        assert_eq!(
+            parse_screen_event(&keyguard_shown(&[0, 0, 0, 0, 0, 0, 0])),
+            None
+        );
+    }
+
+    #[test]
+    fn only_screen_off_ends_a_mute() {
+        assert_eq!(
+            parse_screen_event(&screen_toggled(0)),
+            Some(ScreenEvent::ScreenOff)
+        );
+        assert_eq!(parse_screen_event(&screen_toggled(1)), None);
+    }
+
+    #[test]
+    fn a_crash_is_not_a_screen_event() {
+        let mut bytes = AM_ANR_TAG.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[EVENT_TYPE_LIST, 5]);
+        int(0, &mut bytes);
+        int(99, &mut bytes);
+        string("com.example", &mut bytes);
+        int(1, &mut bytes);
+        string("stuck", &mut bytes);
+        assert_eq!(
+            parse_screen_event(&parse_event_payload(&bytes).unwrap()),
+            None
+        );
     }
 
     #[test]

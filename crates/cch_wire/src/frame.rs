@@ -22,10 +22,22 @@ pub const MAX_FRAME_BODY_BYTES: usize = 1024 * 1024;
 
 /// Protocol version carried in the handshake.
 ///
-/// Bump on any breaking change to the request or response shapes. Additive
-/// changes (a new optional field, a new request variant) do not need a bump
-/// because both sides ignore what they do not recognise.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// **Bump whenever one side's change requires the other to be updated with it** — not only
+/// for a breaking reshape. A purely additive request looks harmless because the old side
+/// ignores what it does not recognise, but the result is a manager whose button silently
+/// does nothing against a module from last week. A refused handshake naming both versions is
+/// a better answer than a feature that quietly is not there.
+///
+/// It is also the signal CI reads: a bump means the APK and the module must be built and
+/// shipped together, and a change that leaves this alone is one either half can take on its
+/// own.
+///
+/// 2: `dismiss_notification` — the manager cannot take down a notification the bridge posted,
+///    so acting on one needs a daemon that forwards the cancel. Also `package_installed` on
+///    `GroupSummary` and `AppEntry`, and the platform-process filter on `list_apps`: the daemon
+///    now tells apps and platform processes apart, and a manager that cannot read that would
+///    present `/vendor/bin/hw/…` as an app and offer to launch it.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Which lane a connection is, decided by its very first frame.
 ///

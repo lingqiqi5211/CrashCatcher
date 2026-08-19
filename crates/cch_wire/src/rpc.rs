@@ -81,6 +81,9 @@ pub enum Request {
     ListApps {
         #[serde(default)]
         include_system_apps: bool,
+        /// Platform processes, which are not apps; see `CrashFilter::include_system_processes`.
+        #[serde(default)]
+        include_system_processes: bool,
         #[serde(default)]
         query: Option<String>,
         #[serde(default)]

@@ -98,6 +98,7 @@ pub fn java_record(happened_at_ms: i64) -> CrashRecord {
         app_version_name: Some("1.4.2".to_owned()),
         app_version_code: Some(10_402),
         is_system_app: false,
+        package_installed: true,
         is_foreground: Some(true),
         self_handled: false,
         dropped_count: None,

@@ -95,11 +95,12 @@ impl SourceMask {
     }
 }
 
-/// Whether a record's bulky payload is still fully available.
+/// Whether a record has a readable payload, and if not, why.
 ///
-/// `Evicted` is the graceful-degradation state from the retention rules: the
-/// metadata row survives so history, counts and statistics stay intact even
-/// though the full stack is gone.
+/// `Evicted` is the graceful-degradation state from the retention rules: the metadata row
+/// survives so history, counts and statistics stay intact even though the full stack is gone.
+/// `Absent` says the opposite thing — nothing was ever stored — and the two must not be
+/// conflated, or a record that never had a stack claims retention deleted one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadState {
@@ -108,6 +109,14 @@ pub enum PayloadState {
     Truncated,
     /// Reclaimed to stay under the total byte quota.
     Evicted,
+    /// There never was one.
+    ///
+    /// Distinct from [`Self::Evicted`], which says storage reclaimed it. A crash seen only in
+    /// the events buffer — `am_crash` with no matching stack in the crash buffer, usually
+    /// because log rotation reached it first — has no payload to begin with, and calling that
+    /// "reclaimed to stay under the quota" tells the reader their retention settings threw
+    /// away something that was never there.
+    Absent,
 }
 
 impl PayloadState {
@@ -117,6 +126,7 @@ impl PayloadState {
             Self::Present => 0,
             Self::Truncated => 1,
             Self::Evicted => 2,
+            Self::Absent => 3,
         }
     }
 
@@ -126,6 +136,7 @@ impl PayloadState {
             0 => Some(Self::Present),
             1 => Some(Self::Truncated),
             2 => Some(Self::Evicted),
+            3 => Some(Self::Absent),
             _ => None,
         }
     }
@@ -198,6 +209,16 @@ mod tests {
         assert!(PayloadState::Present.is_readable());
         assert!(PayloadState::Truncated.is_readable());
         assert!(!PayloadState::Evicted.is_readable());
+        assert!(!PayloadState::Absent.is_readable());
+        for state in [
+            PayloadState::Present,
+            PayloadState::Truncated,
+            PayloadState::Evicted,
+            PayloadState::Absent,
+        ] {
+            assert_eq!(PayloadState::from_i64(state.as_i64()), Some(state));
+        }
+        assert_eq!(PayloadState::from_i64(4), None);
     }
 
     #[test]

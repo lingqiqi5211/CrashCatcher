@@ -30,7 +30,13 @@ pub struct CrashFilter {
     pub time_from_ms: Option<i64>,
     /// Exclusive upper bound, in ms.
     pub time_to_ms: Option<i64>,
+    /// Include the crashes of apps that ship with the platform.
     pub include_system_apps: bool,
+    /// Include the crashes of processes that are not apps at all — `/vendor/bin/hw/…` and the
+    /// like. Separate from [`Self::include_system_apps`] because they read differently: one is
+    /// Settings crashing, the other is a HAL, and wanting to see the first is not wanting to
+    /// wade through the second.
+    pub include_system_processes: bool,
     pub only_main_process: bool,
     /// Only crashes the app swallowed itself — the class of event the reference
     /// implementation cannot see at all.
@@ -64,6 +70,7 @@ impl CrashFilter {
             && self.time_from_ms.is_none()
             && self.time_to_ms.is_none()
             && self.include_system_apps
+            && self.include_system_processes
             && !self.only_main_process
             && !self.only_self_handled
             && self.query.as_deref().unwrap_or("").is_empty()
@@ -409,9 +416,19 @@ mod tests {
     fn a_filter_that_restricts_nothing_is_recognized() {
         let filter = CrashFilter {
             include_system_apps: true,
+            include_system_processes: true,
             ..CrashFilter::default()
         };
         assert!(filter.is_unrestricted());
+
+        // Admitting only one of the two is still a restriction.
+        assert!(
+            !CrashFilter {
+                include_system_apps: true,
+                ..CrashFilter::default()
+            }
+            .is_unrestricted()
+        );
     }
 
     #[test]

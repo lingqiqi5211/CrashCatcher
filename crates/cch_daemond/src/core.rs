@@ -10,7 +10,7 @@ use std::{
 use cch_auth::{AuthError, AuthenticatedManager, Authenticator, ManagerPin};
 use cch_config::{ConfigDocument, ConfigStore, MuteScope, NotifyMode};
 use cch_model::{CrashKind, CrashRecord, PayloadCodec, RecordId};
-use cch_packages::{PackageIndex, is_safe_package_name};
+use cch_packages::{PackageIndex, is_safe_package_name, is_safe_settings_key};
 use cch_settings::{AndroidSettings, DialogTakeoverStatus as SettingsTakeoverStatus};
 use cch_store::{Inserted, Store};
 use cch_wire::{
@@ -143,12 +143,39 @@ impl DaemonCore {
         self.events.subscribe()
     }
 
+    /// Whether the package index's system flags came from PackageManager; see
+    /// [`PackageIndex::system_flags_known`].
+    #[must_use]
+    pub fn package_flags_known(&self) -> bool {
+        self.packages
+            .read()
+            .is_ok_and(|packages| packages.system_flags_known())
+    }
+
     pub fn replace_packages(&self, packages: PackageIndex) -> Result<(), WireError> {
         *self
             .packages
             .write()
             .map_err(|_| WireError::internal("package index lock poisoned"))? = packages;
         Ok(())
+    }
+
+    /// Installs a rebuilt index without losing what the current one already established.
+    ///
+    /// The reload behind this exists to pick up a moved APK path, and can happen while
+    /// `cmd package` is unavailable — replacing outright would then undo the completed system
+    /// flags and leave every app looking third-party until the next reboot.
+    fn install_packages(&self, mut packages: PackageIndex) -> Result<(), WireError> {
+        {
+            // Scoped so the read guard is gone before `replace_packages` takes the write lock;
+            // holding both on one thread would deadlock.
+            let current = self
+                .packages
+                .read()
+                .map_err(|_| WireError::internal("package index lock poisoned"))?;
+            packages.inherit_system_flags(&current);
+        }
+        self.replace_packages(packages)
     }
 
     /// Authenticates a peer uid against the pinned manager certificate.
@@ -175,7 +202,7 @@ impl DaemonCore {
         }
 
         match load_package_index() {
-            Ok(packages) => self.replace_packages(packages)?,
+            Ok(packages) => self.install_packages(packages)?,
             Err(error) => {
                 // Report the authentication failure, not the reload failure: the
                 // caller asked to be let in, and the reload was our idea.
@@ -296,15 +323,77 @@ impl DaemonCore {
             .map_err(|error| error.to_wire())
     }
 
+    /// Drops every mute. Called at start-up, which is what `UntilRestart` means.
     pub fn clear_volatile_mutes(&self) -> Result<(), WireError> {
-        self.volatile_mutes
-            .lock()
-            .map_err(|_| WireError::internal("mute lock poisoned"))?
-            .clear();
-        self.store
-            .clear_all_mutes()
-            .map(|_| ())
-            .map_err(|error| error.to_wire())
+        self.clear_mutes(|_| true).map(|_| ())
+    }
+
+    /// Drops the mutes meant to last until the screen was unlocked, returning how many went.
+    ///
+    /// Driven by `ScreenEvent` from the events collector. Without it the scope never expired:
+    /// the only thing that ever cleared a mute was a daemon restart, so "until unlock" was
+    /// "until reboot" and the app stayed silent indefinitely.
+    pub fn clear_unlock_mutes(&self) -> Result<usize, WireError> {
+        self.clear_mutes(|scope| scope == MuteScope::UntilUnlock)
+    }
+
+    /// Forgets the mutes matching `matches`, in memory, in the store *and* in the config.
+    ///
+    /// The config is the one that was missing, and it is the one the user sees: the app's
+    /// settings screen reads `AppConfig.mute`, and `SetAppConfig` re-applies it — so a mute
+    /// left behind there shows as still active and comes back the next time anything about
+    /// that app is changed.
+    ///
+    /// Driven from the config rather than from memory, because at start-up memory is empty:
+    /// a scope that only ever expires on restart cannot be cleared by looking at the map it
+    /// was just wiped from. Memory is folded in as well so a mute set since the last write
+    /// is not missed.
+    fn clear_mutes(&self, matches: impl Fn(MuteScope) -> bool) -> Result<usize, WireError> {
+        let mut cleared: Vec<String> = self
+            .load_config()?
+            .apps
+            .iter()
+            .filter(|(_, config)| matches(config.mute))
+            .map(|(package, _)| package.clone())
+            .collect();
+
+        {
+            let mut mutes = self
+                .volatile_mutes
+                .lock()
+                .map_err(|_| WireError::internal("mute lock poisoned"))?;
+            for (package, scope) in mutes.clone() {
+                if matches(scope) {
+                    mutes.remove(&package);
+                    if !cleared.contains(&package) {
+                        cleared.push(package);
+                    }
+                }
+            }
+        }
+
+        if cleared.is_empty() {
+            return Ok(0);
+        }
+
+        for package in &cleared {
+            self.store
+                .set_package_mute(package, None)
+                .map_err(|error| error.to_wire())?;
+        }
+        self.update_config(|document| {
+            for package in &cleared {
+                let mut config = document.app(package);
+                config.mute = MuteScope::None;
+                if config.is_default() {
+                    document.apps.remove(package);
+                } else {
+                    document.apps.insert(package.clone(), config);
+                }
+            }
+        })?;
+        self.events.broadcast(Event::ConfigChanged);
+        Ok(cleared.len())
     }
 
     /// Opens a payload for descriptor passing, *and* registers a chunk handle for it.
@@ -463,7 +552,7 @@ impl DaemonCore {
                 })
             }
             Request::GetAppConfig { package_name } => {
-                validate_package(&package_name)?;
+                validate_settings_key(&package_name)?;
                 Ok(Response::AppConfig {
                     result: AppConfigResult {
                         config: self.load_config()?.app(&package_name),
@@ -475,7 +564,7 @@ impl DaemonCore {
                 package_name,
                 patch,
             } => {
-                validate_package(&package_name)?;
+                validate_settings_key(&package_name)?;
                 let stored = self.update_config(|document| {
                     let updated = patch.apply(&document.app(&package_name));
                     if updated.is_default() {
@@ -496,9 +585,15 @@ impl DaemonCore {
             }
             Request::ListApps {
                 include_system_apps,
+                include_system_processes,
                 query,
                 limit,
-            } => self.list_apps(include_system_apps, query.as_deref(), limit),
+            } => self.list_apps(
+                include_system_apps,
+                include_system_processes,
+                query.as_deref(),
+                limit,
+            ),
             Request::Stats {
                 time_from_ms,
                 time_to_ms,
@@ -538,7 +633,7 @@ impl DaemonCore {
                 package_name,
                 scope,
             } => {
-                validate_package(&package_name)?;
+                validate_settings_key(&package_name)?;
                 self.apply_mute(&package_name, scope)?;
                 self.update_config(|document| {
                     let mut config = document.app(&package_name);
@@ -729,6 +824,7 @@ impl DaemonCore {
     fn list_apps(
         &self,
         include_system_apps: bool,
+        include_system_processes: bool,
         query: Option<&str>,
         limit: u32,
     ) -> Result<Response, WireError> {
@@ -736,7 +832,7 @@ impl DaemonCore {
         let config = self.load_config()?;
         let apps = self
             .store
-            .package_rollups(include_system_apps, limit)
+            .package_rollups(include_system_apps, include_system_processes, limit)
             .map_err(|error| error.to_wire())?
             .into_iter()
             .filter(|rollup| {
@@ -758,6 +854,7 @@ impl DaemonCore {
                     label,
                     user_id: rollup.user_id,
                     is_system_app: rollup.is_system_app,
+                    package_installed: rollup.package_installed,
                     group_count: rollup.group_count,
                     occurrence: rollup.occurrence,
                     last_seen_ms: Some(rollup.last_seen_ms),
@@ -808,6 +905,13 @@ impl DaemonCore {
             .is_ok_and(|mutes| mutes.contains_key(package_name))
     }
 
+    /// Fills in what only the daemon can know: version, install location, and whether the
+    /// crashing thing is an app at all.
+    ///
+    /// The last one is why a lookup miss is not ignored. A tombstone names its process, so a
+    /// platform binary arrives with `package_name` set to `/vendor/bin/hw/…` or `surfaceflinger`;
+    /// leaving `is_system_app` at its default let those straight past `include_system_apps`,
+    /// which is what made the setting look like it did nothing.
     fn enrich_record(&self, record: &mut CrashRecord) -> Result<(), WireError> {
         if let Some(package) = self
             .bridge
@@ -816,6 +920,7 @@ impl DaemonCore {
             record.app_version_name = package.version_name;
             record.app_version_code = package.version_code;
             record.is_system_app = package.is_system_app;
+            record.package_installed = true;
             return Ok(());
         }
         let packages = self
@@ -825,13 +930,10 @@ impl DaemonCore {
         if let Some(package) = packages.by_name(&record.package_name) {
             record.user_id = i32::try_from(package.user_id()).unwrap_or(i32::MAX);
             record.app_version_code = record.app_version_code.or(package.version_code);
-            record.is_system_app = package.code_path.as_ref().is_some_and(|path| {
-                let path = path.to_string_lossy();
-                path.starts_with("/system/")
-                    || path.starts_with("/product/")
-                    || path.starts_with("/vendor/")
-                    || path.starts_with("/apex/")
-            });
+        }
+        if let Some(origin) = classify_package(&packages, &record.package_name) {
+            record.is_system_app = origin.is_system_app;
+            record.package_installed = origin.package_installed;
         }
         Ok(())
     }
@@ -888,6 +990,36 @@ impl DaemonCore {
     }
 }
 
+/// Where a crash came from, as far as the package index can tell.
+struct PackageOrigin {
+    is_system_app: bool,
+    package_installed: bool,
+}
+
+/// Decides whether a name belongs to an app, a system app, or no app at all.
+///
+/// `None` means "do not touch what is already there". That is the answer whenever the index
+/// is empty, which means it could not be read rather than that the device has no packages: a
+/// miss would otherwise reclassify every app on the device as a platform process, and with
+/// `include_system_apps` off — the default — that silently drops all crash recording.
+fn classify_package(packages: &PackageIndex, name: &str) -> Option<PackageOrigin> {
+    if packages.is_empty() {
+        return None;
+    }
+    match packages.by_name(name) {
+        Some(package) => Some(PackageOrigin {
+            is_system_app: package.is_system,
+            package_installed: true,
+        }),
+        // No such package. A tombstone names its process, so this is how a platform binary
+        // arrives — `/vendor/bin/hw/…`, `surfaceflinger` — and it belongs to the platform.
+        None => Some(PackageOrigin {
+            is_system_app: true,
+            package_installed: false,
+        }),
+    }
+}
+
 fn captures_kind(config: &ConfigDocument, kind: CrashKind) -> bool {
     match kind {
         CrashKind::JavaException => config.global.capture_java,
@@ -915,11 +1047,25 @@ fn collector_key(source: CollectorSource) -> String {
     format!("{source:?}")
 }
 
+/// For requests that put the name on a command line — starting an activity.
 fn validate_package(package_name: &str) -> Result<(), WireError> {
     if is_safe_package_name(package_name) {
         Ok(())
     } else {
         Err(WireError::invalid_request("invalid package name"))
+    }
+}
+
+/// For requests that only key settings by the name.
+///
+/// Separate because not everything that crashes is an app, and per-app settings have to work for
+/// the rest: held to the package rules, a platform process's settings screen could not read its
+/// own config back, and ignoring or muting one silently failed as an invalid request.
+fn validate_settings_key(package_name: &str) -> Result<(), WireError> {
+    if is_safe_settings_key(package_name) {
+        Ok(())
+    } else {
+        Err(WireError::invalid_request("invalid settings key"))
     }
 }
 
@@ -1113,16 +1259,54 @@ mod tests {
     }
 
     fn test_core() -> (tempfile::TempDir, Arc<DaemonCore>) {
+        core_with_packages(PackageIndex::default())
+    }
+
+    fn core_with_packages(packages: PackageIndex) -> (tempfile::TempDir, Arc<DaemonCore>) {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = Arc::new(Store::open_in_memory(directory.path()).expect("store"));
         let core = DaemonCore::new(
             store,
             ConfigStore::new(directory.path().join("config.json")),
-            PackageIndex::default(),
+            packages,
             Arc::new(FakeSettings),
             BridgeBroker::new(),
         );
         (directory, core)
+    }
+
+    /// An index holding one ordinary app, in `packages.list` shape.
+    fn one_app_index() -> PackageIndex {
+        PackageIndex::build(
+            "com.example 10123 0 /data/user/0/com.example default none 0 1",
+            &Default::default(),
+            &Default::default(),
+        )
+        .expect("index")
+    }
+
+    fn record_named(package: &str, process: &str) -> CrashRecord {
+        CrashRecord {
+            kind: CrashKind::NativeCrash,
+            package_name: package.to_owned(),
+            process_name: process.to_owned(),
+            user_id: 0,
+            pid: 42,
+            // Now, not a fixed epoch: `ingest` sweeps on the retention window straight after
+            // inserting, so a record dated 1970 is gone before anything can read it back.
+            happened_at_ms: now_ms(),
+            app_version_name: None,
+            app_version_code: None,
+            is_system_app: false,
+            package_installed: true,
+            is_foreground: None,
+            self_handled: false,
+            dropped_count: None,
+            sources: SourceMask::TOMBSTONE,
+            summary: CrashSummary::new(Some("SIGSEGV".to_owned()), None),
+            fingerprint: Fingerprint::from_raw_frames(CrashKind::NativeCrash, "SIGSEGV", &[]),
+            payload: PayloadSource::Inline(b"boom".to_vec()),
+        }
     }
 
     #[test]
@@ -1158,6 +1342,7 @@ mod tests {
             app_version_name: None,
             app_version_code: None,
             is_system_app: false,
+            package_installed: true,
             is_foreground: Some(true),
             self_handled: false,
             dropped_count: None,
@@ -1173,5 +1358,102 @@ mod tests {
         let inserted = core.ingest(record).expect("ingest").expect("stored");
         assert_eq!(inserted.group.occurrence, 1);
         assert!(matches!(events.try_recv(), Ok(Event::CrashRecorded { .. })));
+    }
+
+    /// A tombstone names its process, so platform binaries arrive with a path where a package
+    /// name belongs. They used to be stored as ordinary apps — nothing resolved them, so
+    /// `is_system_app` stayed false and they went straight past `include_system_apps`, which is
+    /// what made that setting look like it did nothing.
+    #[test]
+    fn a_platform_process_is_not_recorded_while_system_apps_are_off() {
+        let (_directory, core) = core_with_packages(one_app_index());
+        let stored = core
+            .ingest(record_named(
+                "/vendor/bin/hw/android.hardware.audio.service_64",
+                "/vendor/bin/hw/android.hardware.audio.service_64",
+            ))
+            .expect("ingest");
+        assert!(stored.is_none(), "a platform process is not an app");
+    }
+
+    #[test]
+    fn a_platform_process_is_recorded_as_one_when_system_apps_are_on() {
+        let (_directory, core) = core_with_packages(one_app_index());
+        core.update_config(|document| document.global.include_system_apps = true)
+            .expect("enables system apps");
+
+        let inserted = core
+            .ingest(record_named("surfaceflinger", "surfaceflinger"))
+            .expect("ingest")
+            .expect("stored");
+        assert!(!inserted.group.package_installed, "no package to install");
+        assert!(inserted.group.is_system_app, "belongs to the platform");
+    }
+
+    #[test]
+    fn an_installed_app_is_still_an_app() {
+        let (_directory, core) = core_with_packages(one_app_index());
+        let inserted = core
+            .ingest(record_named("com.example", "com.example"))
+            .expect("ingest")
+            .expect("stored");
+        assert!(inserted.group.package_installed);
+        assert!(!inserted.group.is_system_app, "not under /system");
+    }
+
+    /// Per-app settings have to work for a platform process too — it is the thing most worth
+    /// silencing. Keyed by its path, every one of these used to come back as an invalid request,
+    /// so the settings screen could not read its config, and ignoring or muting did nothing.
+    #[test]
+    fn a_platform_process_can_be_configured_but_not_launched() {
+        let (_directory, core) = test_core();
+        let process = "/vendor/bin/hw/android.hardware.audio.service_64".to_owned();
+
+        let response = core.dispatch(RequestEnvelope {
+            seq: 1,
+            request: Request::GetAppConfig {
+                package_name: process.clone(),
+            },
+        });
+        assert!(response.err.is_none(), "{:?}", response.err);
+
+        let response = core.dispatch(RequestEnvelope {
+            seq: 2,
+            request: Request::MuteApp {
+                package_name: process.clone(),
+                scope: MuteScope::UntilUnlock,
+            },
+        });
+        assert!(response.err.is_none(), "{:?}", response.err);
+
+        // Starting an activity puts the name on a command line, so that one stays strict — and
+        // there is no launcher activity for a HAL anyway.
+        let response = core.dispatch(RequestEnvelope {
+            seq: 3,
+            request: Request::ReopenApp {
+                package_name: process,
+                user_id: 0,
+            },
+        });
+        assert!(matches!(
+            response.err,
+            Some(WireError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+    }
+
+    /// The guard against the failure mode that would be far worse than over-recording: an
+    /// unreadable `packages.list` misses on every lookup, and treating that as "none of these
+    /// are apps" would drop every crash on the device while the setting is off.
+    #[test]
+    fn an_unloaded_package_index_records_everything_rather_than_nothing() {
+        let (_directory, core) = core_with_packages(PackageIndex::default());
+        let inserted = core
+            .ingest(record_named("com.example", "com.example"))
+            .expect("ingest")
+            .expect("stored");
+        assert!(inserted.group.package_installed);
     }
 }

@@ -71,10 +71,10 @@ impl Store {
         transaction.execute(
             "INSERT INTO crash_group (
                  group_id, package_name, process_name, user_id, kind,
-                 is_system_app, is_main_process, self_handled,
+                 is_system_app, package_installed, is_main_process, self_handled,
                  summary_class, summary_text,
                  occurrence, first_seen_ms, last_seen_ms, payload_bytes, muted_until_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?11, ?12, NULL)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?12, ?13, NULL)
              ON CONFLICT(group_id) DO UPDATE SET
                  occurrence    = occurrence + 1,
                  first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms),
@@ -84,7 +84,11 @@ impl Store {
                  -- describe how the app behaves now, not how it behaved first.
                  summary_class = COALESCE(excluded.summary_class, summary_class),
                  summary_text  = COALESCE(excluded.summary_text, summary_text),
-                 self_handled  = excluded.self_handled",
+                 self_handled  = excluded.self_handled,
+                 -- Both are re-resolved on every sighting: an app can be installed after a
+                 -- native process of the same name crashed, or updated into /system.
+                 is_system_app = excluded.is_system_app,
+                 package_installed = excluded.package_installed",
             params![
                 &group_id,
                 &record.package_name,
@@ -92,6 +96,7 @@ impl Store {
                 record.user_id,
                 record.kind.as_i64(),
                 record.is_system_app,
+                record.package_installed,
                 record.is_main_process(),
                 record.self_handled,
                 &record.summary.class_name,
@@ -121,8 +126,12 @@ impl Store {
                 written.map(|written| written.relative_path.as_str()),
                 payload_bytes as i64,
                 written.map_or(0, |written| written.codec.as_i64()),
+                // `Absent`, not `Evicted`: nothing was written because there was nothing to
+                // write. A crash seen only in the events buffer arrives without a stack, and
+                // reporting that as reclaimed-for-quota blames retention for a payload that
+                // never existed.
                 written
-                    .map_or(PayloadState::Evicted, |written| written.state)
+                    .map_or(PayloadState::Absent, |written| written.state)
                     .as_i64(),
             ],
         )?;
@@ -303,14 +312,16 @@ mod tests {
     }
 
     #[test]
-    fn a_record_without_a_payload_is_stored_as_unavailable() {
+    fn a_record_without_a_payload_is_stored_as_absent() {
+        // Not Evicted: that state means retention reclaimed a stack, and the UI says so. A
+        // record that never had one has to be able to say that instead.
         let store = TestStore::new();
         let mut record = java_record(1_000);
         record.payload = PayloadSource::None;
 
         let inserted = store.insert_default(&record).expect("inserts");
         assert_eq!(inserted.record.payload_bytes, 0);
-        assert_eq!(inserted.record.payload_state, PayloadState::Evicted);
+        assert_eq!(inserted.record.payload_state, PayloadState::Absent);
     }
 
     #[test]

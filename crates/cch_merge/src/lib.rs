@@ -279,6 +279,9 @@ impl Pending {
             app_version_name: self.version_name.map(|v| v.value),
             app_version_code: self.version_code.map(|v| v.value),
             is_system_app: self.system.map(|v| v.value).unwrap_or(false),
+            // No collector knows this; the daemon settles it against the package index while
+            // enriching, which is also where `is_system_app` gets its real value.
+            package_installed: true,
             is_foreground: self.foreground.map(|v| v.value),
             self_handled,
             dropped_count: self.dropped,

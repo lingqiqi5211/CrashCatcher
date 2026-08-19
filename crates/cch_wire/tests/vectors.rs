@@ -79,6 +79,7 @@ fn list_groups_request_vector() {
                         "kinds": ["anr"],
                         "user_ids": [],
                         "include_system_apps": false,
+                        "include_system_processes": false,
                         "only_main_process": false,
                         "only_self_handled": false
                     },

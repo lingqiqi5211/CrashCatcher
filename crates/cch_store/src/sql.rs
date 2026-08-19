@@ -91,8 +91,14 @@ pub(crate) fn group_filter(filter: &CrashFilter) -> Predicates {
         predicates.push("first_seen_ms < ?", [Value::Integer(to)]);
     }
 
+    // Two independent exclusions rather than one. A platform process is also flagged as a system
+    // app — it belongs to the platform — so filtering on `is_system_app` alone could not offer
+    // "show me Settings crashing but not every HAL".
     if !filter.include_system_apps {
-        predicates.push("is_system_app = 0", []);
+        predicates.push("NOT (is_system_app = 1 AND package_installed = 1)", []);
+    }
+    if !filter.include_system_processes {
+        predicates.push("package_installed = 1", []);
     }
     if filter.only_main_process {
         predicates.push("is_main_process = 1", []);
@@ -205,7 +211,7 @@ fn placeholders(count: usize) -> String {
 /// Columns selected for a [`GroupSummary`], in the order [`map_group`] reads them.
 pub(crate) const GROUP_COLUMNS: &str = "group_id, package_name, process_name, user_id, kind, \
      is_system_app, is_main_process, self_handled, summary_class, summary_text, \
-     occurrence, first_seen_ms, last_seen_ms, payload_bytes, muted_until_ms";
+     occurrence, first_seen_ms, last_seen_ms, payload_bytes, muted_until_ms, package_installed";
 
 pub(crate) fn map_group(row: &Row<'_>) -> rusqlite::Result<GroupSummary> {
     let kind_value: i64 = row.get(4)?;
@@ -225,6 +231,7 @@ pub(crate) fn map_group(row: &Row<'_>) -> rusqlite::Result<GroupSummary> {
         last_seen_ms: row.get(12)?,
         payload_bytes: row.get::<_, i64>(13)?.max(0) as u64,
         muted_until_ms: row.get(14)?,
+        package_installed: row.get(15)?,
     })
 }
 
@@ -270,27 +277,61 @@ mod tests {
     use super::*;
     use cch_wire::ErrorCode;
 
+    /// Restricts nothing, so each test can add the one thing it is about.
+    fn unrestricted() -> CrashFilter {
+        CrashFilter {
+            include_system_apps: true,
+            include_system_processes: true,
+            ..CrashFilter::default()
+        }
+    }
+
     #[test]
-    fn an_unrestricted_filter_produces_no_where_clause_beyond_system_apps() {
+    fn an_unrestricted_filter_produces_no_where_clause() {
+        assert_eq!(group_filter(&unrestricted()).where_clause(), "");
+    }
+
+    /// Both are off by default, and they are separate predicates: a platform process carries
+    /// the system-app flag too, so one test could not tell the two apart.
+    #[test]
+    fn the_platform_is_excluded_by_default_in_two_parts() {
+        let clause = group_filter(&CrashFilter::default()).where_clause();
+        assert!(
+            clause.contains("NOT (is_system_app = 1 AND package_installed = 1)"),
+            "{clause}"
+        );
+        assert!(clause.contains("package_installed = 1"), "{clause}");
+    }
+
+    #[test]
+    fn system_apps_alone_does_not_admit_platform_processes() {
         let filter = CrashFilter {
             include_system_apps: true,
             ..CrashFilter::default()
         };
-        assert_eq!(group_filter(&filter).where_clause(), "");
+        let clause = group_filter(&filter).where_clause();
+        assert!(!clause.contains("is_system_app"), "{clause}");
+        assert!(clause.contains("package_installed = 1"), "{clause}");
     }
 
     #[test]
-    fn system_apps_are_excluded_by_default() {
-        let predicates = group_filter(&CrashFilter::default());
-        assert_eq!(predicates.where_clause(), " WHERE is_system_app = 0");
+    fn platform_processes_alone_does_not_admit_system_apps() {
+        let filter = CrashFilter {
+            include_system_processes: true,
+            ..CrashFilter::default()
+        };
+        let clause = group_filter(&filter).where_clause();
+        assert_eq!(
+            clause,
+            " WHERE NOT (is_system_app = 1 AND package_installed = 1)"
+        );
     }
 
     #[test]
     fn list_filters_bind_one_placeholder_per_value() {
         let filter = CrashFilter {
             packages: vec!["a".into(), "b".into(), "c".into()],
-            include_system_apps: true,
-            ..CrashFilter::default()
+            ..unrestricted()
         };
         let predicates = group_filter(&filter);
         assert!(
@@ -306,8 +347,7 @@ mod tests {
         let filter = CrashFilter {
             time_from_ms: Some(100),
             time_to_ms: Some(200),
-            include_system_apps: true,
-            ..CrashFilter::default()
+            ..unrestricted()
         };
         let clause = group_filter(&filter).where_clause();
         assert!(clause.contains("last_seen_ms >= ?"));
@@ -326,8 +366,7 @@ mod tests {
     fn a_blank_query_is_not_a_filter() {
         let filter = CrashFilter {
             query: Some("   ".into()),
-            include_system_apps: true,
-            ..CrashFilter::default()
+            ..unrestricted()
         };
         assert_eq!(group_filter(&filter).where_clause(), "");
     }
@@ -336,8 +375,7 @@ mod tests {
     fn a_query_searches_package_class_and_text() {
         let filter = CrashFilter {
             query: Some("boom".into()),
-            include_system_apps: true,
-            ..CrashFilter::default()
+            ..unrestricted()
         };
         let predicates = group_filter(&filter);
         let clause = predicates.where_clause();
@@ -407,6 +445,7 @@ mod tests {
             last_seen_ms: 900,
             payload_bytes: 0,
             muted_until_ms: None,
+            package_installed: true,
         };
 
         assert_eq!(

@@ -26,6 +26,17 @@ pub struct GroupSummary {
     pub last_seen_ms: i64,
     pub payload_bytes: u64,
     pub muted_until_ms: Option<i64>,
+    /// Whether `package_name` is an installed package rather than a platform process.
+    ///
+    /// False for the native binaries a tombstone reports by path — the manager labels those
+    /// separately, since none of an app's affordances (icon, label, launch, per-app settings)
+    /// mean anything for `/vendor/bin/hw/android.hardware.audio.service_64`.
+    #[serde(default = "default_true")]
+    pub package_installed: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// One occurrence inside a group.
@@ -139,6 +150,10 @@ pub struct AppEntry {
     pub last_seen_ms: Option<i64>,
     /// The override in force, if any.
     pub config: AppConfig,
+    /// False when this is a platform process rather than an app; see
+    /// [`GroupSummary::package_installed`].
+    #[serde(default = "default_true")]
+    pub package_installed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
