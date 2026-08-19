@@ -46,8 +46,8 @@ mod platform {
 
     use cch_auth::{ManagerPin, peer_credentials};
     use cch_wire::{
-        BRIDGE_SOCKET_NAME, BridgeEvent, ChannelKind, MANAGER_SOCKET_NAME, Request,
-        RequestEnvelope, Response, ResponseEnvelope,
+        BRIDGE_SOCKET_NAME, BridgeEvent, ChannelKind, ErrorCode, MANAGER_SOCKET_NAME, Request,
+        RequestEnvelope, Response, ResponseEnvelope, WireError,
     };
     use tracing::{debug, warn};
 
@@ -120,13 +120,41 @@ mod platform {
         }
     }
 
+    /// Serves one control connection, once the two sides agree on a protocol.
+    ///
+    /// The agreement is enforced here rather than trusted to the client. A manager whose protocol
+    /// differs is told so and hung up on: it cannot read, and it certainly cannot write, with a
+    /// daemon whose requests and responses it does not share a definition of. Leaving that to the
+    /// manager would mean the check only works while both sides are the version that implements
+    /// it — which is never the case when it matters.
     fn manager_control(mut stream: UnixStream, core: &DaemonCore) -> io::Result<()> {
+        let mut agreed = false;
         loop {
             let envelope = match read_json_frame::<_, RequestEnvelope>(&mut stream) {
                 Ok(envelope) => envelope,
                 Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
                 Err(error) => return Err(error),
             };
+            if !agreed {
+                if envelope.request.requires_handshake() {
+                    let error = WireError::new(
+                        ErrorCode::VersionMismatch,
+                        "handshake required before any other request",
+                    );
+                    write_json_frame(&mut stream, &ResponseEnvelope::err(envelope.seq, error))?;
+                    return Ok(());
+                }
+                // The handshake's own answer carries the version comparison; a failure ends the
+                // connection rather than leaving it open for a retry that cannot succeed.
+                let response = core.dispatch(envelope);
+                let refused = response.err.is_some();
+                write_json_frame(&mut stream, &response)?;
+                if refused {
+                    return Ok(());
+                }
+                agreed = true;
+                continue;
+            }
             if let Request::OpenPayload { id } = &envelope.request {
                 match core.open_payload_fd(id) {
                     Ok((fd, opened)) => {

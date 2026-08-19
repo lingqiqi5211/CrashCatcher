@@ -120,6 +120,20 @@ pub enum Request {
     },
 }
 
+impl Request {
+    /// Whether the daemon should refuse this until a handshake has agreed on a protocol.
+    ///
+    /// True for everything except the handshake itself. The version check is worth nothing if a
+    /// client can decline to ask: [`Self::Handshake`] is an ordinary variant, so without this the
+    /// daemon would happily serve a manager that skipped it, or one that asked, was told the
+    /// versions differ, and carried on anyway. Refusing is the daemon's job rather than the
+    /// manager's — the whole point is that the two are not the same version.
+    #[must_use]
+    pub const fn requires_handshake(&self) -> bool {
+        !matches!(self, Self::Handshake { .. })
+    }
+}
+
 /// The successful answer to a [`Request`].
 ///
 /// Every variant carries **named** fields, never a bare payload. An internally
@@ -282,6 +296,31 @@ mod tests {
     fn requests_are_tagged_by_method() {
         let json = serde_json::to_string(&Request::ModuleStatus).expect("serializes");
         assert_eq!(json, r#"{"method":"module_status"}"#);
+    }
+
+    /// Only the handshake may be served before there is one, and the cheapest-looking request is
+    /// no exception: reading the module status without agreeing on a protocol is exactly what a
+    /// mismatched manager would try next.
+    #[test]
+    fn only_the_handshake_is_served_before_a_handshake() {
+        assert!(
+            !Request::Handshake {
+                protocol_version: 1,
+                client_version: "0.1.0".into(),
+            }
+            .requires_handshake()
+        );
+        assert!(Request::ModuleStatus.requires_handshake());
+        assert!(
+            Request::ListGroups {
+                page: PageRequest::default(),
+            }
+            .requires_handshake()
+        );
+        assert!(
+            Request::SetDialogTakeover { enabled: true }.requires_handshake(),
+            "a write least of all"
+        );
     }
 
     #[test]
