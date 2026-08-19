@@ -224,6 +224,7 @@ sealed class WireRequest {
     @SerialName("list_apps")
     data class ListApps(
         val includeSystemApps: Boolean = false,
+        val includeSystemProcesses: Boolean = false,
         val query: String? = null,
         val limit: Int = 0,
     ) : WireRequest()

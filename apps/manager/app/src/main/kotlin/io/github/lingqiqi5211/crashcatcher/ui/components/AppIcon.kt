@@ -8,7 +8,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import io.github.lingqiqi5211.meowui.theme.MeowIcons
 import io.github.lingqiqi5211.meowui.theme.MeowTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -74,6 +76,10 @@ private object AppIconCache {
  *
  * [label] seeds the placeholder's initial, so a row never renders as an empty square:
  * the fallback still says *which* app, which is the only job the icon has here.
+ *
+ * [isProcess] switches to a glyph instead. A platform process has no icon to find and no
+ * useful initial either — every `/vendor/…` and `/system/…` binary would render as the same
+ * `V` or `S` — so the slot says "not an app" rather than naming one badly.
  */
 @Composable
 internal fun AppIcon(
@@ -81,7 +87,28 @@ internal fun AppIcon(
     label: String?,
     modifier: Modifier = Modifier,
     size: Dp = 40.dp,
+    isProcess: Boolean = false,
 ) {
+    if (isProcess) {
+        Box(
+            modifier = modifier
+                .size(size)
+                .background(
+                    MeowTheme.colors.surfaceContainerHighest,
+                    RoundedCornerShape(size / 4),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = MeowIcons.SystemProcess,
+                contentDescription = null,
+                tint = MeowTheme.colors.onSurfaceVariant,
+                modifier = Modifier.size(size * 0.55f),
+            )
+        }
+        return
+    }
+
     val context = LocalContext.current.applicationContext
     // Previews have no real PackageManager worth querying, and the placeholder is the
     // more useful thing to see while designing a row.

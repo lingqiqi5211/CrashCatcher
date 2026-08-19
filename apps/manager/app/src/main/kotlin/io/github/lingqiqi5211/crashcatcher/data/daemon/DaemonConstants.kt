@@ -29,7 +29,13 @@ object DaemonConstants {
      */
     const val MAX_FRAME_BODY_BYTES = 1024 * 1024
 
-    const val PROTOCOL_VERSION = 1
+    /**
+     * Must equal `cch_wire::PROTOCOL_VERSION`; the handshake refuses the connection otherwise.
+     *
+     * Bumped whenever either side needs the other updated with it — see the Rust constant for
+     * why an additive request still counts, and what each version added.
+     */
+    const val PROTOCOL_VERSION = 2
 
     val DEFAULT_REQUEST_TIMEOUT = 5.seconds
 }

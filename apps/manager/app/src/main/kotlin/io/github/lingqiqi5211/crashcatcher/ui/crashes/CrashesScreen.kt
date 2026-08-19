@@ -40,6 +40,7 @@ import io.github.lingqiqi5211.crashcatcher.ui.components.crashCatcherContentBott
 import io.github.lingqiqi5211.crashcatcher.ui.components.AppIcon
 import io.github.lingqiqi5211.crashcatcher.ui.components.rememberAppLabel
 import io.github.lingqiqi5211.crashcatcher.ui.util.errorDescription
+import io.github.lingqiqi5211.crashcatcher.ui.util.processDisplayName
 import io.github.lingqiqi5211.crashcatcher.ui.util.processSuffix
 import io.github.lingqiqi5211.crashcatcher.ui.util.shortTypeName
 import io.github.lingqiqi5211.crashcatcher.ui.util.errorTitle
@@ -244,11 +245,17 @@ private fun CrashRow(group: GroupSummary, onClick: () -> Unit) {
     // rows differ in height and colour for reasons that had nothing to do with what they
     // said. They are all neutral detail and are drawn as such.
     val qualifiers = buildList {
+        // Leads the row's qualifiers because it changes what everything else means: there is
+        // no app here, so there is no version, no icon and nothing to open.
+        if (!group.packageInstalled) add(stringResource(R.string.crashes_system_process))
         // Which *process* died, when it was not the main one. Two crashes sharing a
         // package and an exception are different bugs if they came from different
         // processes, and a background-process crash is invisible to the user in a way a
         // main-process one is not.
-        if (!group.isMainProcess) {
+        //
+        // Skipped for a platform process: its "package" *is* its process path, so the badge
+        // would repeat the line above it verbatim.
+        if (!group.isMainProcess && group.packageInstalled) {
             processSuffix(group.packageName, group.processName)?.let(::add)
         }
         // Worth calling out: no comparable tool records this class of crash at all.
@@ -272,6 +279,7 @@ private fun CrashRow(group: GroupSummary, onClick: () -> Unit) {
                 packageName = group.packageName,
                 label = null,
                 size = 36.dp,
+                isProcess = !group.packageInstalled,
             )
 
             // One column for every line of text, so the message and the meta line start
@@ -284,8 +292,14 @@ private fun CrashRow(group: GroupSummary, onClick: () -> Unit) {
                 ) {
                     Text(
                         // The bare class name, not its package: `java.lang.` is the same
-                        // on every row and pushes the part that differs off the end.
-                        text = group.summaryClass?.let(::shortTypeName) ?: group.packageName,
+                        // on every row and pushes the part that differs off the end. With no
+                        // class — a signal, typically — the process is all there is to lead with.
+                        text = group.summaryClass?.let(::shortTypeName)
+                            ?: if (group.packageInstalled) {
+                                group.packageName
+                            } else {
+                                processDisplayName(group.processName)
+                            },
                         style = MeowTheme.typography.title,
                         fontWeight = FontWeight.Medium,
                         color = MeowTheme.colors.onSurface,
@@ -320,7 +334,15 @@ private fun CrashRow(group: GroupSummary, onClick: () -> Unit) {
                     Text(
                         // The app's name where it is known, since "which app" is what the
                         // reader is scanning for; the package is on the detail page.
-                        text = rememberAppLabel(group.packageName) ?: group.packageName,
+                        //
+                        // A platform process is not looked up at all: PackageManager has
+                        // nothing to say about `/vendor/bin/hw/…`, and the binary's own name
+                        // is what identifies it.
+                        text = if (group.packageInstalled) {
+                            rememberAppLabel(group.packageName) ?: group.packageName
+                        } else {
+                            processDisplayName(group.processName)
+                        },
                         style = MeowTheme.typography.summary,
                         color = MeowTheme.colors.onSurfaceVariant,
                         maxLines = 1,

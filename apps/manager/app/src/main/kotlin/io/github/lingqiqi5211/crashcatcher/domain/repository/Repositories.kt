@@ -166,7 +166,12 @@ data class DialogTakeoverOutcome(
 )
 
 interface AppInventoryRepository {
-    suspend fun listApps(includeSystemApps: Boolean, query: String?, limit: Int): Result<List<AppEntry>>
+    suspend fun listApps(
+        includeSystemApps: Boolean,
+        includeSystemProcesses: Boolean,
+        query: String?,
+        limit: Int,
+    ): Result<List<AppEntry>>
 
     suspend fun reopen(packageName: String, userId: Int): Result<Boolean>
 }

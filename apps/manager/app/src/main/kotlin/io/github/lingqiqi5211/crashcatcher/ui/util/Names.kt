@@ -39,3 +39,27 @@ internal fun processSuffix(packageName: String, processName: String?): String? {
     // take, and truncating it would misattribute the crash.
     return if (suffix == process) process else ":$suffix"
 }
+
+/**
+ * Whether `name` could be an Android package name at all.
+ *
+ * A local stand-in for the daemon's verdict, for the moment before its answer arrives: Android
+ * refuses a package name containing `/`, and requires at least one `.`, so anything of either
+ * shape is certainly a process rather than an app. Wrong only in the harmless direction — a
+ * process whose name happens to look like a package reads as an app until the first row loads.
+ */
+internal fun couldBePackageName(name: String): Boolean =
+    name.isNotEmpty() && !name.contains('/') && name.contains('.')
+
+/**
+ * What to call a platform process on one line.
+ *
+ * A tombstone identifies its process by path, so these arrive as
+ * `/vendor/bin/hw/android.hardware.audio.service_64`. In a row that has an app's name in the
+ * same slot, the leading directories are the part that is the same for every one of them, and
+ * they push the binary's name off the end. The full path is still shown on the detail page.
+ */
+internal fun processDisplayName(processName: String): String {
+    val trimmed = processName.trim().trimEnd('/')
+    return trimmed.substringAfterLast('/').takeIf { it.isNotEmpty() } ?: processName
+}

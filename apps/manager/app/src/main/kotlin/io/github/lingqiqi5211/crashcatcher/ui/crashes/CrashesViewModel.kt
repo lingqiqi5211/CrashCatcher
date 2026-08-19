@@ -33,6 +33,7 @@ internal data class CrashesUiState(
     val query: String = "",
     val searchExpanded: Boolean = false,
     val includeSystemApps: Boolean = false,
+    val includeSystemProcesses: Boolean = false,
     val onlySelfHandled: Boolean = false,
     val isLoading: Boolean = true,
     val isRefreshing: Boolean = false,
@@ -110,6 +111,11 @@ internal class CrashesViewModel(
         refresh()
     }
 
+    fun onIncludeSystemProcessesChange(include: Boolean) {
+        state.update { it.copy(includeSystemProcesses = include) }
+        refresh()
+    }
+
     fun onOnlySelfHandledChange(only: Boolean) {
         state.update { it.copy(onlySelfHandled = only) }
         refresh()
@@ -166,6 +172,7 @@ internal class CrashesViewModel(
         val filter = CrashFilter(
             kinds = listOfNotNull(current.tab.kind),
             includeSystemApps = current.includeSystemApps,
+            includeSystemProcesses = current.includeSystemProcesses,
             onlySelfHandled = current.onlySelfHandled,
             query = current.query.takeIf { it.isNotBlank() },
         )

@@ -334,8 +334,13 @@ class DaemonAppInventoryRepository(
     private val client: DaemonClient,
 ) : AppInventoryRepository {
 
-    override suspend fun listApps(includeSystemApps: Boolean, query: String?, limit: Int) = client
-        .ask(WireRequest.ListApps(includeSystemApps, query, limit)) { response ->
+    override suspend fun listApps(
+        includeSystemApps: Boolean,
+        includeSystemProcesses: Boolean,
+        query: String?,
+        limit: Int,
+    ) = client
+        .ask(WireRequest.ListApps(includeSystemApps, includeSystemProcesses, query, limit)) { response ->
             (response as? WireResponse.Apps)?.apps ?: unexpected(response)
         }
 

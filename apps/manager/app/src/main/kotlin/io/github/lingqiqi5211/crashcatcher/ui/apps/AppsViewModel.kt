@@ -24,6 +24,7 @@ internal data class AppsUiState(
     val query: String = "",
     val searchExpanded: Boolean = false,
     val includeSystemApps: Boolean = false,
+    val includeSystemProcesses: Boolean = false,
     val isLoading: Boolean = true,
     val isRefreshing: Boolean = false,
     val error: DomainError? = null,
@@ -80,6 +81,11 @@ internal class AppsViewModel(
         refresh()
     }
 
+    fun onIncludeSystemProcessesChange(include: Boolean) {
+        state.update { it.copy(includeSystemProcesses = include) }
+        refresh()
+    }
+
     fun refresh() {
         inFlight?.cancel()
         state.update {
@@ -116,6 +122,7 @@ internal class AppsViewModel(
         val current = state.value
         apps.listApps(
             includeSystemApps = current.includeSystemApps,
+            includeSystemProcesses = current.includeSystemProcesses,
             query = current.query.takeIf { it.isNotBlank() },
             limit = PAGE_LIMIT,
         ).onSuccess { entries ->

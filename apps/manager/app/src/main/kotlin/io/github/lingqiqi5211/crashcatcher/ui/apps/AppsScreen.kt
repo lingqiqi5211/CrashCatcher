@@ -39,6 +39,7 @@ import io.github.lingqiqi5211.crashcatcher.ui.crashes.refreshTexts
 import io.github.lingqiqi5211.crashcatcher.ui.util.errorDescription
 import io.github.lingqiqi5211.crashcatcher.ui.util.errorTitle
 import io.github.lingqiqi5211.crashcatcher.ui.util.formatTimestampCompact
+import io.github.lingqiqi5211.crashcatcher.ui.util.processDisplayName
 import io.github.lingqiqi5211.crashcatcher.ui.util.isRetryable
 import io.github.lingqiqi5211.meowui.component.MeowCard
 import io.github.lingqiqi5211.meowui.component.MeowPullToRefresh
@@ -177,9 +178,21 @@ private fun AppRow(app: AppEntry, onClick: () -> Unit) {
             // The daemon's label comes from the privileged bridge and can be absent; the
             // local PackageManager lookup covers that, so a row is never a package name
             // printed twice with nothing else to tell the two lines apart.
-            val label = app.label ?: rememberAppLabel(app.packageName)
+            //
+            // A platform process has no label to find either way, and its binary's name is
+            // what identifies it; the full path stays on the line below.
+            val label = if (app.packageInstalled) {
+                app.label ?: rememberAppLabel(app.packageName)
+            } else {
+                processDisplayName(app.packageName)
+            }
 
-            AppIcon(packageName = app.packageName, label = label, size = 36.dp)
+            AppIcon(
+                packageName = app.packageName,
+                label = label,
+                size = 36.dp,
+                isProcess = !app.packageInstalled,
+            )
 
             // Two lines, not three: name and badges, then the package with the time beside
             // it. The count is a tag rather than loose text — it is the same kind of thing
@@ -200,6 +213,13 @@ private fun AppRow(app: AppEntry, onClick: () -> Unit) {
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    // Ahead of the per-app override badge, because origin changes what the
+                    // rest of the row means — a platform process has no app to notify about
+                    // or launch at all. The two are mutually exclusive: a process that is not
+                    // an installed package cannot be a system *app*.
+                    originLabel(app)?.let { origin ->
+                        StatusTag(text = origin, tone = StatusTagTone.Neutral)
+                    }
                     appOverrideLabel(app)?.let { override ->
                         StatusTag(text = override, tone = StatusTagTone.Neutral)
                     }
@@ -244,6 +264,14 @@ private fun AppRow(app: AppEntry, onClick: () -> Unit) {
             }
         }
     }
+}
+
+/** Where this row's crashes came from, or null for an ordinary user-installed app. */
+@Composable
+private fun originLabel(app: AppEntry): String? = when {
+    !app.packageInstalled -> stringResource(R.string.crashes_system_process)
+    app.isSystemApp -> stringResource(R.string.crashes_system_app)
+    else -> null
 }
 
 @Composable

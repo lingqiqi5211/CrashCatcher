@@ -482,6 +482,14 @@ private fun PayloadNotice(state: RecordDetailUiState, width: Dp) {
             modifier = noticeModifier.testTag("crashcatcher.detail.evicted"),
         )
 
+        // Says which collector saw it and why that leaves no stack, rather than implying the
+        // retention limits took one away.
+        PayloadState.Absent -> WarningCard(
+            title = stringResource(R.string.detail_payload_absent),
+            body = stringResource(R.string.detail_payload_absent_body),
+            modifier = noticeModifier.testTag("crashcatcher.detail.absent"),
+        )
+
         else -> Unit
     }
 }

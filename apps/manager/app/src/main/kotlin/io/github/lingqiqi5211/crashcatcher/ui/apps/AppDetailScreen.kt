@@ -15,6 +15,7 @@ import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsNavigationRow
 import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsSection
 import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsSwitchRow
 import io.github.lingqiqi5211.crashcatcher.ui.util.formatTimestamp
+import io.github.lingqiqi5211.crashcatcher.ui.util.processDisplayName
 import io.github.lingqiqi5211.meowui.component.MeowPreferencePage
 
 /**
@@ -46,7 +47,15 @@ internal fun AppDetailScreen(
     // The app's name as the heading, its package underneath. A package name set at
     // display size wraps mid-segment and reads as a path rather than as "which app this
     // page is about"; the package is still needed, just not as the headline.
-    val label = rememberAppLabel(state.packageName)
+    //
+    // For a platform process the binary's name plays that part, with the full path below it;
+    // PackageManager is not asked, since it has nothing to say about `/vendor/bin/hw/…`.
+    val process = state.isPlatformProcess
+    val label = if (process) {
+        processDisplayName(state.packageName)
+    } else {
+        rememberAppLabel(state.packageName)
+    }
 
     MeowPreferencePage(
         title = label ?: state.packageName,
@@ -84,16 +93,20 @@ internal fun AppDetailScreen(
             )
         }
 
-        SettingsSection(
-            title = stringResource(R.string.app_section_actions),
-            testTag = "crashcatcher.appdetail.actions",
-        ) {
-            SettingsNavigationRow(
-                title = stringResource(R.string.app_reopen),
-                description = stringResource(R.string.app_reopen_summary),
-                onClick = actions.onReopen,
-                modifier = Modifier.testTag("crashcatcher.appdetail.reopen"),
-            )
+        // Dropped for a platform process: there is no launcher activity to resolve, so the row
+        // could only ever report that it failed.
+        if (!process) {
+            SettingsSection(
+                title = stringResource(R.string.app_section_actions),
+                testTag = "crashcatcher.appdetail.actions",
+            ) {
+                SettingsNavigationRow(
+                    title = stringResource(R.string.app_reopen),
+                    description = stringResource(R.string.app_reopen_summary),
+                    onClick = actions.onReopen,
+                    modifier = Modifier.testTag("crashcatcher.appdetail.reopen"),
+                )
+            }
         }
 
         if (state.groups.isNotEmpty()) {

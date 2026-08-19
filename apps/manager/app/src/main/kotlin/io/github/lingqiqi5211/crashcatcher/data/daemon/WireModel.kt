@@ -44,7 +44,17 @@ enum class PayloadState {
 
     /** Reclaimed to stay under the total byte quota; the row survives. */
     @SerialName("evicted")
-    Evicted;
+    Evicted,
+
+    /**
+     * There never was one — a crash seen only in the events buffer.
+     *
+     * Kept apart from [Evicted] because the screens say different things: one blames the
+     * retention limits for deleting a stack, and telling a user that about a record that never
+     * had one sends them to change a setting that had nothing to do with it.
+     */
+    @SerialName("absent")
+    Absent;
 
     val isReadable: Boolean get() = this == Present || this == Truncated
 }
@@ -218,6 +228,14 @@ data class CrashFilter(
     val timeFromMs: Long? = null,
     val timeToMs: Long? = null,
     val includeSystemApps: Boolean = false,
+    /**
+     * Processes that are not apps — `/vendor/bin/hw/…` and the like.
+     *
+     * Separate from [includeSystemApps] because they read differently: one is Settings
+     * crashing, the other is a HAL, and wanting the first is not wanting to wade through
+     * the second.
+     */
+    val includeSystemProcesses: Boolean = false,
     val onlyMainProcess: Boolean = false,
     /** Only crashes the app swallowed itself. */
     val onlySelfHandled: Boolean = false,
@@ -252,6 +270,14 @@ data class GroupSummary(
     val lastSeenMs: Long,
     val payloadBytes: Long,
     val mutedUntilMs: Long? = null,
+    /**
+     * Whether [packageName] is an installed package rather than a platform process.
+     *
+     * A tombstone reports its process, so native binaries arrive as
+     * `/vendor/bin/hw/android.hardware.audio.service_64`. None of an app's affordances — icon,
+     * label, launch, per-app notification settings — mean anything for one of those.
+     */
+    val packageInstalled: Boolean = true,
 )
 
 @Serializable
@@ -367,6 +393,8 @@ data class AppEntry(
     val occurrence: Long,
     val lastSeenMs: Long? = null,
     val config: AppConfig = AppConfig(),
+    /** False when this is a platform process rather than an app; see [GroupSummary]. */
+    val packageInstalled: Boolean = true,
 )
 
 @Serializable

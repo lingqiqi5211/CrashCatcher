@@ -71,6 +71,9 @@
     <string name="crashes_error_title">读取崩溃列表失败</string>
     <string name="crashes_occurrence">%1$d 次</string>
     <string name="crashes_self_handled">应用自行处理</string>
+    <string name="crashes_system_process">系统进程</string>
+    <string name="crashes_system_app">系统应用</string>
+    <string name="filter_include_system_processes">包含系统进程</string>
     <string name="crashes_filter">筛选</string>
     <string name="crashes_only_self_handled">仅应用自处理</string>
 
@@ -107,6 +110,9 @@
     <string name="group_user">用户</string>
     <string name="group_pruned">另有 %1$d 次已超出保留上限，仅计入次数</string>
     <string name="record_payload_gone">日志已回收</string>
+    <string name="record_payload_absent">无日志正文</string>
+    <string name="detail_payload_absent">这条记录没有日志正文</string>
+    <string name="detail_payload_absent_body">只有事件日志看到了这次崩溃，崩溃日志缓冲里没有对应的堆栈——通常是日志轮转先把它冲掉了。记录的时间、进程与分组仍然准确。</string>
     <string name="record_repeating">重复</string>
 
     <!-- Apps -->
@@ -124,7 +130,7 @@
     <string name="app_section_history">崩溃历史</string>
     <string name="app_notify_follow_global">跟随全局</string>
     <string name="app_ignore">完全忽略</string>
-    <string name="app_ignore_summary">不记录这个应用的任何崩溃</string>
+    <string name="app_ignore_summary">不再记录它的任何崩溃</string>
     <string name="app_mute">静音</string>
     <string name="app_mute_none">不静音</string>
     <string name="app_mute_until_unlock">至下次解锁</string>

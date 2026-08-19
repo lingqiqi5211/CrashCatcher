@@ -34,6 +34,7 @@ import io.github.lingqiqi5211.crashcatcher.ui.components.StatusTagTone
 import io.github.lingqiqi5211.crashcatcher.ui.components.TonalCard
 import io.github.lingqiqi5211.crashcatcher.ui.components.rememberAppLabel
 import io.github.lingqiqi5211.crashcatcher.ui.util.formatTimestamp
+import io.github.lingqiqi5211.crashcatcher.ui.util.processDisplayName
 import io.github.lingqiqi5211.crashcatcher.ui.util.processSuffix
 import io.github.lingqiqi5211.crashcatcher.ui.util.shortTypeName
 import io.github.lingqiqi5211.meowui.component.MeowCard
@@ -60,15 +61,26 @@ internal fun GroupDetailScreen(
 
     // Same reasoning as the record page: the exception's own name is the heading, the
     // package and the process go in the subtitle where they fit on one line.
-    val label = rememberAppLabel(group?.packageName.orEmpty())
-    val subtitle = remember(group, label) {
-        val process = group?.let { processSuffix(it.packageName, it.processName) }
-        listOfNotNull(label ?: group?.packageName, process).joinToString(separator = " · ")
+    //
+    // A platform process is not looked up: it has no label, and its path is already the
+    // whole identity, so the subtitle carries it unabbreviated rather than adding a badge
+    // that repeats it.
+    val isProcess = group != null && !group.packageInstalled
+    val label = rememberAppLabel(if (isProcess) "" else group?.packageName.orEmpty())
+    val subtitle = remember(group, label, isProcess) {
+        if (isProcess) {
+            group?.processName.orEmpty()
+        } else {
+            val process = group?.let { processSuffix(it.packageName, it.processName) }
+            listOfNotNull(label ?: group?.packageName, process).joinToString(separator = " · ")
+        }
     }
 
     MeowScaffold(
         title = group?.summaryClass?.let(::shortTypeName)
-            ?: group?.packageName?.let(::shortTypeName)
+            ?: group?.let {
+                if (isProcess) processDisplayName(it.processName) else shortTypeName(it.packageName)
+            }
             ?: stringResource(R.string.loading),
         modifier = modifier,
         subtitle = subtitle,
@@ -243,9 +255,17 @@ private fun RecordRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
-            if (record.payloadState == PayloadState.Evicted) {
+            // Two different facts, two different words: retention deleted the stack, or there
+            // never was one. Labelling both "已回收" pointed users at a storage setting that had
+            // nothing to do with it.
+            val payloadNote = when (record.payloadState) {
+                PayloadState.Evicted -> R.string.record_payload_gone
+                PayloadState.Absent -> R.string.record_payload_absent
+                else -> null
+            }
+            if (payloadNote != null) {
                 StatusTag(
-                    text = stringResource(R.string.record_payload_gone),
+                    text = stringResource(payloadNote),
                     tone = StatusTagTone.Neutral,
                 )
             } else if (record.isRepeating) {

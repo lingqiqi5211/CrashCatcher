@@ -13,6 +13,7 @@ import io.github.lingqiqi5211.crashcatcher.data.daemon.SortKey
 import io.github.lingqiqi5211.crashcatcher.data.daemon.domainError
 import io.github.lingqiqi5211.crashcatcher.domain.model.DomainError
 import io.github.lingqiqi5211.crashcatcher.domain.repository.AppInventoryRepository
+import io.github.lingqiqi5211.crashcatcher.ui.util.couldBePackageName
 import io.github.lingqiqi5211.crashcatcher.domain.repository.ConfigRepository
 import io.github.lingqiqi5211.crashcatcher.domain.repository.CrashRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +63,18 @@ internal data class AppDetailUiState(
     val error: DomainError? = null,
 ) {
     val notifyChoice: AppNotifyChoice get() = AppNotifyChoice.from(config.notifyMode)
+
+    /**
+     * Whether this page is about a platform process rather than an app.
+     *
+     * The daemon's verdict where a row has arrived, since the route carries only a name; the
+     * name's own shape until then, so the page does not open as an app and rearrange itself a
+     * moment later.
+     */
+    val isPlatformProcess: Boolean
+        get() = groups.firstOrNull()
+            ?.let { !it.packageInstalled }
+            ?: !couldBePackageName(packageName)
 }
 
 internal class AppDetailViewModel(
@@ -88,9 +101,12 @@ internal class AppDetailViewModel(
             crashes.listGroups(
                 filter = CrashFilter(
                     packages = listOf(packageName),
-                    // The user opened this app deliberately, so its own crashes show
-                    // regardless of the global "hide system apps" preference.
+                    // The user opened this entry deliberately, so its own crashes show
+                    // regardless of the list's filters. Both of them: without the second, a
+                    // platform process's page came up with no history at all — the very rows
+                    // whose count the user tapped on.
                     includeSystemApps = true,
+                    includeSystemProcesses = true,
                 ),
                 sort = SortKey.LastSeenDesc,
                 cursor = null,

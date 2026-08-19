@@ -513,6 +513,15 @@ private fun crashesFilterMenu(
                 selected = state.includeSystemApps,
                 onClick = { viewModel.onIncludeSystemAppsChange(!state.includeSystemApps) },
             ),
+            // Its own switch, not part of the one above: a HAL crashing is a different kind of
+            // noise from Settings crashing, and wanting to see one is not wanting both.
+            MeowMenuItem(
+                text = stringResource(R.string.filter_include_system_processes),
+                selected = state.includeSystemProcesses,
+                onClick = {
+                    viewModel.onIncludeSystemProcessesChange(!state.includeSystemProcesses)
+                },
+            ),
             MeowMenuItem(
                 text = stringResource(R.string.crashes_only_self_handled),
                 selected = state.onlySelfHandled,
@@ -536,6 +545,13 @@ private fun appsFilterMenu(
             text = stringResource(R.string.settings_include_system_apps),
             selected = state.includeSystemApps,
             onClick = { viewModel.onIncludeSystemAppsChange(!state.includeSystemApps) },
+        ),
+        MeowMenuItem(
+            text = stringResource(R.string.filter_include_system_processes),
+            selected = state.includeSystemProcesses,
+            onClick = {
+                viewModel.onIncludeSystemProcessesChange(!state.includeSystemProcesses)
+            },
         ),
     ),
 )
