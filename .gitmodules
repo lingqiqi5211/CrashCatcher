@@ -1,0 +1,4 @@
+[submodule "third_party/MeowUI"]
+	path = third_party/MeowUI
+	url = https://github.com/lingqiqi5211/MeowUI.git
+	branch = test
