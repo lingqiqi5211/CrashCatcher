@@ -222,7 +222,10 @@ mod tests {
             normalize_java_frame("at com.example.Foo.bar(Unknown Source)"),
             "com.example.Foo.bar(Unknown Source)"
         );
-        assert_eq!(normalize_java_frame("at com.example.Foo.bar"), "com.example.Foo.bar");
+        assert_eq!(
+            normalize_java_frame("at com.example.Foo.bar"),
+            "com.example.Foo.bar"
+        );
         assert_eq!(normalize_java_frame("garbage ((("), "garbage (((");
     }
 
@@ -249,9 +252,13 @@ mod tests {
 
     #[test]
     fn framework_frames_are_recognized_before_and_after_normalization() {
-        assert!(is_framework_frame("\tat android.app.Activity.performCreate(Activity.java:8595)"));
+        assert!(is_framework_frame(
+            "\tat android.app.Activity.performCreate(Activity.java:8595)"
+        ));
         assert!(is_framework_frame("java.lang.Thread.run(Thread.java)"));
-        assert!(!is_framework_frame("at com.example.app.Repo.load(Repo.kt:88)"));
+        assert!(!is_framework_frame(
+            "at com.example.app.Repo.load(Repo.kt:88)"
+        ));
     }
 
     #[test]
@@ -336,7 +343,10 @@ mod tests {
             user_id: 0,
             fingerprint: &fingerprint,
         };
-        let other_user = GroupKey { user_id: 10, ..base.clone() };
+        let other_user = GroupKey {
+            user_id: 10,
+            ..base.clone()
+        };
         let other_process = GroupKey {
             process_name: "com.example.app:remote",
             ..base.clone()

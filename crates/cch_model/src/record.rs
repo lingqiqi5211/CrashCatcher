@@ -126,7 +126,10 @@ mod tests {
     fn summary_text_is_truncated_to_the_cap() {
         let long = "x".repeat(SUMMARY_TEXT_MAX_BYTES + 100);
         let summary = CrashSummary::new(None, Some(long));
-        assert_eq!(summary.text.map(|text| text.len()), Some(SUMMARY_TEXT_MAX_BYTES));
+        assert_eq!(
+            summary.text.map(|text| text.len()),
+            Some(SUMMARY_TEXT_MAX_BYTES)
+        );
     }
 
     #[test]
@@ -140,7 +143,8 @@ mod tests {
 
     #[test]
     fn short_text_is_left_alone() {
-        let summary = CrashSummary::new(Some("java.lang.Error".to_owned()), Some("boom".to_owned()));
+        let summary =
+            CrashSummary::new(Some("java.lang.Error".to_owned()), Some("boom".to_owned()));
         assert_eq!(summary.text.as_deref(), Some("boom"));
     }
 

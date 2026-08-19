@@ -1,0 +1,18 @@
+# Pinned, because CI compiles the daemon that ships in the release.
+#
+# Two reasons beyond reproducibility. rustfmt's style rules are tied to the toolchain, and
+# with `edition = "2024"` a newer rustfmt reorders imports differently — so an unpinned CI
+# fails `cargo fmt --check` on code that was formatted correctly by whatever version the
+# author had. And a stable release that regresses something in a root daemon is not a
+# surprise worth taking on a schedule nobody chose.
+#
+# Bump deliberately: change the version here, run `cargo fmt --all` and `cargo clippy`, and
+# commit the result in one go.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+]

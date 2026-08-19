@@ -67,10 +67,7 @@ impl PackageIndex {
     /// Split from the parsing so the code paths can come from whichever source is
     /// actually readable on the running device; a package missing from
     /// [`code_paths`] simply has no path rather than failing the whole index.
-    pub fn build(
-        list: &str,
-        code_paths: &HashMap<String, PathBuf>,
-    ) -> Result<Self, PackageError> {
+    pub fn build(list: &str, code_paths: &HashMap<String, PathBuf>) -> Result<Self, PackageError> {
         let mut entries = vec![];
         for (i, line) in list.lines().enumerate() {
             let line = line.trim();

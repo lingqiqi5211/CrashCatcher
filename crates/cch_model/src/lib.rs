@@ -17,13 +17,13 @@ mod kind;
 mod record;
 
 pub use fingerprint::{
-    is_framework_frame, normalize_java_frame, normalize_native_frame, Fingerprint, GroupKey,
-    GROUP_ID_LEN,
+    Fingerprint, GROUP_ID_LEN, GroupKey, is_framework_frame, normalize_java_frame,
+    normalize_native_frame,
 };
 pub use id::{RecordId, RecordIdGenerator};
 pub use kind::{CrashKind, PayloadCodec, PayloadState, SourceMask};
 pub use record::{
-    truncate_on_char_boundary, CrashRecord, CrashSummary, PayloadSource, SUMMARY_TEXT_MAX_BYTES,
+    CrashRecord, CrashSummary, PayloadSource, SUMMARY_TEXT_MAX_BYTES, truncate_on_char_boundary,
 };
 
 /// Number of leading stack frames that take part in a fingerprint.

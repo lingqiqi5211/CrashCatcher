@@ -1,5 +1,7 @@
 use cch_model::{CrashKind, PayloadCodec, PayloadState, RecordId, SourceMask};
-use cch_wire::{CrashFilter, Cursor, CursorAnchor, GroupSummary, RecordSummary, SortKey, WireError};
+use cch_wire::{
+    CrashFilter, Cursor, CursorAnchor, GroupSummary, RecordSummary, SortKey, WireError,
+};
 use rusqlite::{Row, types::Value};
 
 /// A SQL fragment together with the values to bind to it.

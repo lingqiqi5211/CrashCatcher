@@ -92,10 +92,9 @@ impl RetentionPolicy {
             max_records_total: self
                 .max_records_total
                 .clamp(Self::MIN_RECORDS_TOTAL, Self::MAX_RECORDS_TOTAL),
-            max_payload_bytes_total: self.max_payload_bytes_total.clamp(
-                Self::MIN_PAYLOAD_BYTES_TOTAL,
-                Self::MAX_PAYLOAD_BYTES_TOTAL,
-            ),
+            max_payload_bytes_total: self
+                .max_payload_bytes_total
+                .clamp(Self::MIN_PAYLOAD_BYTES_TOTAL, Self::MAX_PAYLOAD_BYTES_TOTAL),
             max_payload_bytes_per_record: self.max_payload_bytes_per_record.clamp(
                 Self::MIN_PAYLOAD_BYTES_PER_RECORD,
                 Self::MAX_PAYLOAD_BYTES_PER_RECORD,

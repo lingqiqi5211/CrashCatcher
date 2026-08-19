@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -99,12 +98,10 @@ impl ConfigStore {
 
     fn quarantine(&self) {
         let mut target = self.path.clone();
-        let name = self
-            .path
-            .file_name()
-            .map_or_else(|| "config.json".to_owned(), |name| {
-                name.to_string_lossy().into_owned()
-            });
+        let name = self.path.file_name().map_or_else(
+            || "config.json".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         target.set_file_name(format!("{name}.corrupt"));
         if let Err(error) = fs::rename(&self.path, &target) {
             warn!(
@@ -119,8 +116,7 @@ impl ConfigStore {
     /// Writes the document atomically.
     pub fn save(&self, document: &ConfigDocument) -> Result<(), ConfigError> {
         let normalized = document.clone().normalized();
-        let mut json =
-            serde_json::to_string_pretty(&normalized).map_err(ConfigError::Serialize)?;
+        let mut json = serde_json::to_string_pretty(&normalized).map_err(ConfigError::Serialize)?;
         json.push('\n');
 
         if let Some(parent) = self.path.parent()
@@ -160,12 +156,10 @@ impl ConfigStore {
 
     fn temp_path(&self) -> PathBuf {
         let mut temp = self.path.clone();
-        let name = self
-            .path
-            .file_name()
-            .map_or_else(|| "config.json".to_owned(), |name| {
-                name.to_string_lossy().into_owned()
-            });
+        let name = self.path.file_name().map_or_else(
+            || "config.json".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         temp.set_file_name(format!(".{name}.tmp"));
         temp
     }

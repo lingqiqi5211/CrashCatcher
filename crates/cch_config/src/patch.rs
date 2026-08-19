@@ -242,7 +242,10 @@ mod tests {
         // that round-trips into "clear the override" would silently wipe settings.
         let cases = [
             (None, r#"{"ignore":null,"mute":null}"#),
-            (Some(None), r#"{"notify_mode":null,"ignore":null,"mute":null}"#),
+            (
+                Some(None),
+                r#"{"notify_mode":null,"ignore":null,"mute":null}"#,
+            ),
             (
                 Some(Some(NotifyMode::Toast)),
                 r#"{"notify_mode":"toast","ignore":null,"mute":null}"#,
@@ -258,7 +261,10 @@ mod tests {
             assert_eq!(json, expected_json, "for {notify_mode:?}");
 
             let parsed: AppConfigPatch = serde_json::from_str(&json).expect("deserializes");
-            assert_eq!(parsed.notify_mode, notify_mode, "round trip for {notify_mode:?}");
+            assert_eq!(
+                parsed.notify_mode, notify_mode,
+                "round trip for {notify_mode:?}"
+            );
         }
     }
 
@@ -281,7 +287,10 @@ mod tests {
     fn app_patch_emptiness_reflects_the_double_option() {
         let cleared: AppConfigPatch =
             serde_json::from_str(r#"{"notify_mode":null}"#).expect("null patch");
-        assert!(!cleared.is_empty(), "clearing the override is a real change");
+        assert!(
+            !cleared.is_empty(),
+            "clearing the override is a real change"
+        );
         assert!(AppConfigPatch::default().is_empty());
     }
 }

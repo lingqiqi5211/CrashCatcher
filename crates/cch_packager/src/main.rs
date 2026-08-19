@@ -6,8 +6,8 @@ use std::{
     thread,
 };
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
 use cch_auth::ManagerPin;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use thiserror::Error;
@@ -16,11 +16,7 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 const DEFAULT_API: u32 = 29;
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "cch-packager",
-    version,
-    about = "Build CrashCatcher artifacts"
-)]
+#[command(name = "cch-packager", version, about = "Build CrashCatcher artifacts")]
 struct Cli {
     #[command(subcommand)]
     command: PackageCommand,

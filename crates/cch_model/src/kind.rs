@@ -14,12 +14,7 @@ pub enum CrashKind {
 }
 
 impl CrashKind {
-    pub const ALL: [Self; 4] = [
-        Self::JavaException,
-        Self::Anr,
-        Self::NativeCrash,
-        Self::Wtf,
-    ];
+    pub const ALL: [Self; 4] = [Self::JavaException, Self::Anr, Self::NativeCrash, Self::Wtf];
 
     #[must_use]
     pub const fn as_i64(self) -> i64 {

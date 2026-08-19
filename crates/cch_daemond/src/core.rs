@@ -16,9 +16,9 @@ use cch_store::{Inserted, Store};
 use cch_wire::{
     AppConfigResult, AppEntry, BridgeAction, CollectorHealth, CollectorSource,
     DialogTakeoverResult, DialogTakeoverStatus, ErrorCode, Event, ExportFormat, ExportRedaction,
-    GlobalConfigResult, MAX_PAYLOAD_CHUNK_BYTES, ModuleStatus, MuteResult,
-    NotificationAction, NotificationSpec, PROTOCOL_VERSION, PayloadChunk, PayloadOpened, Request,
-    RequestEnvelope, Response, ResponseEnvelope, WireError,
+    GlobalConfigResult, MAX_PAYLOAD_CHUNK_BYTES, ModuleStatus, MuteResult, NotificationAction,
+    NotificationSpec, PROTOCOL_VERSION, PayloadChunk, PayloadOpened, Request, RequestEnvelope,
+    Response, ResponseEnvelope, WireError,
 };
 
 use tracing::warn;
@@ -1020,8 +1020,7 @@ fn resolve_launcher_component(package_name: &str, user_id: i32) -> Option<String
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
-        .filter(|line| line.contains('/') && !line.contains(char::is_whitespace))
-        .next_back()
+        .rfind(|line| line.contains('/') && !line.contains(char::is_whitespace))
         .map(str::to_owned)
 }
 

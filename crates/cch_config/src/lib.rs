@@ -12,8 +12,8 @@ mod patch;
 mod store;
 
 pub use model::{
-    AppConfig, ConfigDocument, GlobalConfig, MuteScope, NotifyMode, RetentionPolicy,
-    CONFIG_SCHEMA_VERSION,
+    AppConfig, CONFIG_SCHEMA_VERSION, ConfigDocument, GlobalConfig, MuteScope, NotifyMode,
+    RetentionPolicy,
 };
 pub use patch::{AppConfigPatch, GlobalConfigPatch, RetentionPatch};
 pub use store::{ConfigError, ConfigStore};

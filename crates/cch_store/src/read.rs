@@ -87,9 +87,9 @@ impl Store {
         if let Some(cursor) = &page.cursor {
             cursor.validate_for(SortKey::LastSeenDesc)?;
             let CursorAnchor::Int(anchor) = cursor.anchor else {
-                return Err(StoreError::Request(cch_wire::WireError::cursor_invalidated(
-                    "record pages anchor on a timestamp",
-                )));
+                return Err(StoreError::Request(
+                    cch_wire::WireError::cursor_invalidated("record pages anchor on a timestamp"),
+                ));
             };
             clauses.push_str(" AND (happened_at_ms < ?2 OR (happened_at_ms = ?2 AND id < ?3))");
             params.push(rusqlite::types::Value::Integer(anchor));

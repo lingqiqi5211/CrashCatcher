@@ -219,7 +219,10 @@ fn dropbox_fragment(entry: DropboxEntry) -> Result<Option<CrashFragment>, String
     };
     // An entry with neither a process nor a package cannot be attributed to an app, so
     // there is nothing useful to record. Still not a collector fault.
-    let Some(process_name) = entry.process_name.clone().or_else(|| entry.package_name.clone())
+    let Some(process_name) = entry
+        .process_name
+        .clone()
+        .or_else(|| entry.package_name.clone())
     else {
         return Ok(None);
     };
@@ -476,7 +479,9 @@ fn spawn_events_loop(
     thread::Builder::new()
         .name("ct-log-events".to_owned())
         .spawn(move || {
-            use cch_logd::{AndroidLogReader, LogBuffer, parse_activity_event, parse_event_payload};
+            use cch_logd::{
+                AndroidLogReader, LogBuffer, parse_activity_event, parse_event_payload,
+            };
             let mut reader = match AndroidLogReader::open(LogBuffer::Events) {
                 Ok(reader) => reader,
                 Err(error) => {
