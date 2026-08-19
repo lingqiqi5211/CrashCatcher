@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Posts whatever this build produced to the release channel, with the changelog.
+# Posts a development build to the channel.
+#
+# Tags deliberately do not come through here: a release announces itself through the GitHub
+# release and through the module's own update check, so posting the same two files again would
+# put two identical messages in the channel minutes apart.
 #
 # Only the artifacts this build actually made are sent: a Kotlin-only commit ships an APK
 # alone, a daemon-only commit ships a module alone. The channel therefore shows what changed
@@ -26,23 +30,15 @@ fi
 
 escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
-# What to call this build. A tag is its own name; anything else is the version plus the commit
-# count and short hash, which is what the module reports in the root manager — so a message in
-# the channel and a line in the module list can be matched up.
-if [ "${IS_TAG:-false}" = "true" ]; then
-  label="${GITHUB_REF_NAME:-$SUFFIX}"
-else
-  label="$(sed -n 's/^version=//p' version.properties)-r$(git rev-list --count HEAD)-g$(git rev-parse --short=7 HEAD)"
-fi
+# The version plus the commit count and short hash — the same string the module reports in the
+# root manager, so a message in the channel and a line in the module list can be matched up.
+label="$(sed -n 's/^version=//p' version.properties)-r$(git rev-list --count HEAD)-g$(git rev-parse --short=7 HEAD)"
 
-# What to summarise: a tag compares against the previous tag, a push against what it replaced.
-# `before` is all zeroes for a new branch and can point at a commit that no longer exists, so
-# both cases fall back to the tip commit alone rather than failing the build over a changelog.
+# What to summarise: the range this push replaced. `before` is all zeroes for a new branch and
+# can point at a commit that no longer exists, so both cases fall back to the tip commit alone
+# rather than failing the build over a changelog.
 range=""
-if [ "${IS_TAG:-false}" = "true" ]; then
-  previous=$(git describe --tags --abbrev=0 "${SHA}^" 2>/dev/null || true)
-  [ -n "$previous" ] && range="$previous..$SHA"
-elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
   && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
   range="$BEFORE..$SHA"
 fi
@@ -55,18 +51,10 @@ else
   compare="https://github.com/${REPOSITORY}/commit/${SHA}"
 fi
 
-# A release says what changed in the words of whoever cut it: the annotated tag's body. Subject
-# lines are for people reading the code, and this message goes to people installing it. Only a
-# tag has one, so every other build keeps the commit list.
-if [ "${IS_TAG:-false}" = "true" ]; then
-  notes=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || true)
-  [ -n "$notes" ] && log="$notes"
-fi
-
 caption=$(
   printf '<b>CrashCatcher %s</b>\n\n' "$(printf '%s' "$label" | escape)"
   printf '%s\n\n' "$(printf '%s' "$log" | escape)"
-  printf '<a href="%s">%s</a>' "$compare" "$([ "${IS_TAG:-false}" = "true" ] && echo '更新日志' || echo '本次改动')"
+  printf '<a href="%s">本次改动</a>' "$compare"
 )
 # Telegram caps a caption at 1024 characters and rejects the whole request when it is longer.
 #

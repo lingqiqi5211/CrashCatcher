@@ -313,21 +313,23 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # Development builds only. A tag already announces itself through the release and the
+      # module's own update check, and posting the same pair of files again puts two identical
+      # messages in the channel minutes apart.
       - name: Post to the channel
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         env:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
           BEFORE: ${{ github.event.before }}
-          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: bash .github/scripts/post-telegram.sh
 
       # What changed, in the words of whoever cut the tag. `generate_release_notes` alone gives a
       # commit list and a contributor line — accurate, and not an answer to "should I install
-      # this". The annotated tag's body is where that answer is written, and it feeds the channel
-      # post and the module changelog too, so there is one copy of it.
+      # this". The annotated tag's body is where that answer is written, and the module changelog
+      # reads the same message, so there is one copy of it.
       - name: Take the release notes from the tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
