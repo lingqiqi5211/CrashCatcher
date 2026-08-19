@@ -1,0 +1,62 @@
+# Checks both halves of the project on every push.
+#
+# The Rust daemon and the Kotlin manager serialise the same protocol independently, so
+# neither side's tests alone prove they still agree — cch_wire's vector tests are what
+# pin that, and they run here with everything else.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: rustup component add clippy rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # Denies unwrap/expect/panic in this workspace (see clippy.toml): the daemon runs as
+      # root on someone's phone, and a panic there takes crash recording down silently.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  android:
+    name: Manager
+    runs-on: ubuntu-latest
+    steps:
+      # Submodules are the whole UI layer: MeowUI, and miuix inside it.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # No keystore.properties here, so both variants fall back to the debug key. That is
+      # fine for compiling and for unit tests; only a build that has to talk to the daemon
+      # needs the pinned certificate, and that is the release workflow's job.
+      - name: Assemble and test
+        working-directory: apps/manager
+        run: ./gradlew --no-daemon assembleDebug testDebugUnitTest
