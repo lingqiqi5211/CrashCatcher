@@ -466,7 +466,7 @@ impl DaemonCore {
                 }
                 Ok(Response::Handshake {
                     protocol_version: PROTOCOL_VERSION,
-                    daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    daemon_version: env!("CCH_DAEMON_VERSION").to_owned(),
                 })
             }
             Request::ModuleStatus => Ok(Response::ModuleStatus {
@@ -706,7 +706,7 @@ impl DaemonCore {
         };
         let uptime_ms = i64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
         Ok(ModuleStatus {
-            daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            daemon_version: env!("CCH_DAEMON_VERSION").to_owned(),
             protocol_version: PROTOCOL_VERSION,
             uptime_ms,
             collectors,

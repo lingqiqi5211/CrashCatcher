@@ -230,6 +230,7 @@ fn build_daemons(
         .join(ndk_host_tag())
         .join("bin");
     let target_dir = workspace.join("target");
+    let release_label = version_label(workspace)?;
     thread::scope(|scope| {
         abis.iter()
             .copied()
@@ -237,6 +238,7 @@ fn build_daemons(
                 let toolchain = toolchain.clone();
                 let workspace = workspace.to_path_buf();
                 let target_dir = target_dir.clone();
+                let release_label = release_label.clone();
                 scope.spawn(move || {
                     let clang =
                         toolchain.join(ndk_tool(&format!("{}{}-clang", abi.clang_prefix(), api)));
@@ -255,6 +257,9 @@ fn build_daemons(
                         .env(linker_variable, &clang)
                         .env(cc_variable, &clang)
                         .env(ar_variable, toolchain.join(llvm_tool("llvm-ar")))
+                        // The same label this writes into module.prop, so the about page and the
+                        // root manager's module list cannot disagree about which build is running.
+                        .env("CCH_RELEASE_VERSION", &release_label)
                         .arg("build")
                         .arg("--release")
                         .arg("--locked")
