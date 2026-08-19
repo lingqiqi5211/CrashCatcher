@@ -4,9 +4,10 @@
 #
 # - **Scoped.** The manager APK and the root module are independent artifacts, so a
 #   Kotlin-only commit does not cross-compile three daemon ABIs and a daemon-only commit does
-#   not spend three minutes in R8. The protocol is the exception — `crates/cch_wire` is
-#   implemented twice and only the vector tests keep the two in step, so touching it ships
-#   both halves.
+#   not spend three minutes in R8. Both halves are built together only when
+#   `cch_wire::PROTOCOL_VERSION` moves — that constant is bumped exactly when one side needs
+#   the other updated with it, which makes it the signal, rather than any edit under
+#   `crates/cch_wire` (a comment or a daemon-only DTO changes nothing the manager depends on).
 # - **Parallel.** Checks, APK and module are three jobs that do not wait on each other, so
 #   the wall clock is the slowest one rather than their sum. Publishing collects whatever the
 #   build actually produced.
@@ -86,8 +87,6 @@ jobs:
         with:
           base: ${{ steps.range.outputs.base }}
           filters: |
-            wire:
-              - 'crates/cch_wire/**'
             rust:
               - 'crates/**'
               - 'Cargo.toml'
@@ -104,12 +103,36 @@ jobs:
               - 'version.properties'
               - '.github/**'
 
+      # Did the protocol version move?
+      #
+      # This, and not "did anything under crates/cch_wire change", is what forces both halves.
+      # The constant is bumped exactly when one side needs the other updated with it, so it is
+      # the one honest signal for "these two must ship together" — while a comment, a new DTO
+      # only the daemon reads, or a test vector touches that directory without changing
+      # anything the manager depends on.
+      - name: Check the protocol version
+        id: protocol
+        if: steps.range.outputs.base != ''
+        run: |
+          file=crates/cch_wire/src/frame.rs
+          current=$(sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);/\1/p' "$file")
+          previous=$(git show "${{ steps.range.outputs.base }}:$file" 2>/dev/null \
+            | sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);/\1/p')
+          # An unreadable old value means the file is new or moved — treat that as a change
+          # rather than assuming it held still.
+          if [ -z "$previous" ] || [ "$previous" != "$current" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::protocol ${previous:-unknown} → $current, building both halves"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Written as `if` blocks on purpose: the step runs under `bash -e`, where a trailing
       # `[ x ] && y=true` exits non-zero the moment the test is false and fails the job.
       - name: Decide what to build
         id: decide
         env:
-          WIRE: ${{ steps.filter.outputs.wire }}
+          WIRE: ${{ steps.protocol.outputs.changed }}
           RUST: ${{ steps.filter.outputs.rust }}
           BRIDGE: ${{ steps.filter.outputs.bridge }}
           MODULE: ${{ steps.filter.outputs.module }}
