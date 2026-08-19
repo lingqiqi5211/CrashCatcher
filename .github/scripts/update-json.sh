@@ -31,9 +31,14 @@ jq -n \
 
 # The changelog that field points at has to exist and has to be plain text the module viewer
 # can render — release notes live in the API, not at a URL.
+#
+# Led by the tag's own message, which is where what-changed is written for the people installing
+# it; the commit subjects follow for anyone who wants the detail.
 previous=$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)
+notes=$(git tag -l --format='%(contents:body)' "$tag")
 {
   printf '# %s\n\n' "$version"
+  [ -n "$notes" ] && printf '%s\n\n' "$notes"
   if [ -n "$previous" ]; then
     git log --no-merges --format='- %s' "${previous}..${tag}"
   else

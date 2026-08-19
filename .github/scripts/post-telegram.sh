@@ -55,21 +55,40 @@ else
   compare="https://github.com/${REPOSITORY}/commit/${SHA}"
 fi
 
+# A release says what changed in the words of whoever cut it: the annotated tag's body. Subject
+# lines are for people reading the code, and this message goes to people installing it. Only a
+# tag has one, so every other build keeps the commit list.
+if [ "${IS_TAG:-false}" = "true" ]; then
+  notes=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || true)
+  [ -n "$notes" ] && log="$notes"
+fi
+
 caption=$(
   printf '<b>CrashCatcher %s</b>\n\n' "$(printf '%s' "$label" | escape)"
   printf '%s\n\n' "$(printf '%s' "$log" | escape)"
   printf '<a href="%s">%s</a>' "$compare" "$([ "${IS_TAG:-false}" = "true" ] && echo '更新日志' || echo '本次改动')"
 )
 # Telegram caps a caption at 1024 characters and rejects the whole request when it is longer.
-caption=$(printf '%s' "$caption" | head -c 1000)
+#
+# `head -c` counts bytes, so cutting Chinese mid-character leaves invalid UTF-8 that Telegram
+# rejects outright. `iconv -c` drops the partial sequence at the end — and exits non-zero for
+# having done so, which under `set -e` would fail the build instead of shortening a caption.
+if [ "$(printf '%s' "$caption" | wc -c)" -gt 1000 ]; then
+  caption=$(printf '%s' "$caption" | head -c 1000 | iconv -c -f utf-8 -t utf-8 2>/dev/null || true)
+fi
 
 api="https://api.telegram.org/bot${TOKEN}"
 
+# `--form-string` for every text field, `-F` only where `@` has to mean "upload this file".
+# `-F name=value` also treats a leading `<` as "read the value from this file", and the caption
+# is HTML — so `<b>CrashCatcher …` was taken as a filename and the whole post died on
+# `curl: (26) Failed to open/read local data`, forty milliseconds in, taking the release step
+# with it.
 if [ "${#files[@]}" -eq 1 ]; then
   curl -sS --fail-with-body -X POST "$api/sendDocument" \
-    -F "chat_id=$CHAT" \
-    -F "parse_mode=HTML" \
-    -F "caption=$caption" \
+    --form-string "chat_id=$CHAT" \
+    --form-string "parse_mode=HTML" \
+    --form-string "caption=$caption" \
     -F "document=@${files[0]}" > /dev/null
   echo "sent ${files[0]}"
   exit 0
@@ -93,7 +112,7 @@ for index in "${!files[@]}"; do
 done
 
 curl -sS --fail-with-body -X POST "$api/sendMediaGroup" \
-  -F "chat_id=$CHAT" \
-  -F "media=$media" \
+  --form-string "chat_id=$CHAT" \
+  --form-string "media=$media" \
   "${attachments[@]}" > /dev/null
 echo "sent ${files[*]}"

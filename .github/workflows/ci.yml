@@ -324,6 +324,20 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
         run: bash .github/scripts/post-telegram.sh
 
+      # What changed, in the words of whoever cut the tag. `generate_release_notes` alone gives a
+      # commit list and a contributor line — accurate, and not an answer to "should I install
+      # this". The annotated tag's body is where that answer is written, and it feeds the channel
+      # post and the module changelog too, so there is one copy of it.
+      - name: Take the release notes from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          notes=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")
+          if [ -z "$notes" ]; then
+            echo "::warning::$GITHUB_REF_NAME carries no annotation; falling back to the generated notes."
+            notes=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
+          fi
+          printf '%s\n' "$notes" > release-notes.md
+
       # Only a tag becomes a release, and only a release moves update.json — the root manager
       # polls it, and pointing it at a per-push build would offer everyone an update to
       # whatever landed on main five minutes ago.
@@ -333,6 +347,7 @@ jobs:
         with:
           files: dist/*
           name: CrashCatcher ${{ github.ref_name }}
+          body_path: release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true
 
