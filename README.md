@@ -59,7 +59,7 @@ keyPassword=…
 
 **debug 构建也用这把 release key**：守护进程只认 pin 住的那张证书，用调试签名签出来的管理器连不上 socket。
 
-发布版本号在 [version.properties](version.properties) 一处，Gradle 与打包器都读它，`versionCode` 由它推导。
+版本名在 [version.properties](version.properties) 一处，Gradle 与打包器都读它；`versionCode` 是**提交数**，两边各自 `git rev-list --count HEAD` 得到同一个数，所以没有第二个要手动 bump 的数字。产物名里的 `r15` 就是它——每次 CI 构建都能对回具体那个提交。浅克隆数出来是 1，所以 CI 用完整历史 checkout。
 
 ## 结构
 
@@ -75,7 +75,7 @@ keyPassword=…
 
 ## 许可
 
-暂未确定，发布前会补上。
+[AGPL-3.0](LICENSE)。选它是因为对照的 AppErrorsTracking 也是 AGPL-3.0，而本项目从它那里继承了不少思路。
 
 ## 致谢
 
