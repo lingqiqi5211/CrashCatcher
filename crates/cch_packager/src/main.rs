@@ -148,6 +148,7 @@ fn build_module(arguments: ModuleArgs) -> Result<(), PackagerError> {
 
     let staging = TempDir::new()?;
     copy_tree(&template, staging.path())?;
+    stamp_version(&workspace, &staging.path().join("module.prop"))?;
     let config = staging.path().join("config");
     fs::create_dir_all(&config)?;
     fs::write(
@@ -430,6 +431,62 @@ fn create_zip(root: &Path, output: &Path) -> Result<(), PackagerError> {
     }
     writer.finish()?.sync_all()?;
     Ok(())
+}
+
+/// Writes the repository's version into the staged `module.prop`.
+///
+/// The template carries whatever was last committed, which is one more place for the
+/// module and the manager to disagree — and a root manager showing 0.1.0 next to an about
+/// page showing 0.2.0 gives the user no way to tell which half is stale. Both halves read
+/// `version.properties` instead: the manager's Gradle build for its versionName, this for
+/// `version` and `versionCode`.
+///
+/// `versionCode` is derived the same way Gradle derives it (major*10000 + minor*100 +
+/// patch), so the two numbers stay comparable.
+fn stamp_version(workspace: &Path, module_prop: &Path) -> Result<(), PackagerError> {
+    let version = repository_version(workspace)?;
+    let parts: Vec<u32> = version
+        .split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            PackagerError::Arguments(format!("version `{version}` is not major.minor.patch"))
+        })?;
+    let [major, minor, patch] = parts.as_slice() else {
+        return Err(PackagerError::Arguments(format!(
+            "version `{version}` is not major.minor.patch"
+        )));
+    };
+    if *minor >= 100 || *patch >= 100 {
+        return Err(PackagerError::Arguments(format!(
+            "version `{version}` overflows the versionCode encoding (minor/patch < 100)"
+        )));
+    }
+    let code = major * 10_000 + minor * 100 + patch;
+
+    let original = fs::read_to_string(module_prop)?;
+    let rewritten: String = original
+        .lines()
+        .map(|line| match line.split_once('=') {
+            Some(("version", _)) => format!("version={version}"),
+            Some(("versionCode", _)) => format!("versionCode={code}"),
+            _ => line.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(module_prop, format!("{rewritten}\n"))?;
+    Ok(())
+}
+
+/// `version` from the repository's `version.properties`.
+fn repository_version(workspace: &Path) -> Result<String, PackagerError> {
+    let path = workspace.join("version.properties");
+    let text = fs::read_to_string(&path)?;
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim() == "version")
+        .map(|(_, value)| value.trim().to_owned())
+        .ok_or_else(|| PackagerError::Arguments(format!("no `version` in {}", path.display())))
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), PackagerError> {

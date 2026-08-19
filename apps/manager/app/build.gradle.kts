@@ -23,6 +23,36 @@ val keystoreProperties = Properties().apply {
 }
 val hasReleaseKey = keystoreProperties.getProperty("storeFile") != null
 
+/**
+ * The release version, from the repository's `version.properties`.
+ *
+ * Shared with `cch-packager`, which writes the same value into `module.prop`, so the APK
+ * and the module it is pinned to always report the same version. Hardcoding it here is
+ * how the two drift.
+ *
+ * `versionCode` is derived rather than tracked separately: it has to increase for every
+ * release Android will accept as an update, and a second hand-maintained number is a
+ * second thing to forget. `0.1.0` becomes 10000, `1.2.3` becomes 10203 — monotonic as
+ * long as minor and patch stay below 100, which is checked below rather than assumed.
+ */
+val releaseVersion: String = Properties().apply {
+    val file = rootProject.file("../../version.properties")
+    require(file.isFile) { "version.properties is missing at ${file.absolutePath}" }
+    file.inputStream().use { load(it) }
+}.getProperty("version") ?: error("version.properties has no `version`")
+
+val releaseVersionCode: Int = run {
+    val parts = releaseVersion.split('.').map {
+        it.toIntOrNull() ?: error("version `$releaseVersion` is not major.minor.patch")
+    }
+    require(parts.size == 3) { "version `$releaseVersion` is not major.minor.patch" }
+    val (major, minor, patch) = parts
+    require(minor < 100 && patch < 100) {
+        "version `$releaseVersion` overflows the versionCode encoding (minor/patch < 100)"
+    }
+    major * 10_000 + minor * 100 + patch
+}
+
 android {
     namespace = "io.github.lingqiqi5211.crashcatcher"
     compileSdk = libs.versions.compileSdk.get().toInt()
@@ -31,8 +61,8 @@ android {
         applicationId = "io.github.lingqiqi5211.crashcatcher"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersion
     }
 
     if (hasReleaseKey) {
