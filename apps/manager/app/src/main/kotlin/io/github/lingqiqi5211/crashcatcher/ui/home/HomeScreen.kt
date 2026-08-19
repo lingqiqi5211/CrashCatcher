@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -168,6 +169,12 @@ private fun StatusCard(state: HomeUiState, onReconnect: () -> Unit) {
         // Tapping only does something when there is something to retry.
         onClick = onReconnect.takeIf { state.runtimeStatus == RuntimeStatus.Unreachable },
     ) {
+        // Read inside the card, where `contentColor` has already been resolved into
+        // LocalContentColor. `Color.Unspecified` is a sentinel whose components are zero, so
+        // `content.copy(alpha = …)` on it does not mean "the card's colour, dimmed" — it means
+        // opaque black, which is what the supporting line turned into.
+        val resolved = LocalContentColor.current
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -191,12 +198,12 @@ private fun StatusCard(state: HomeUiState, onReconnect: () -> Unit) {
                     text = stringResource(visuals.headlineRes),
                     style = MeowTheme.typography.sectionTitle,
                     fontWeight = FontWeight.SemiBold,
-                    color = content,
+                    color = resolved,
                 )
                 Text(
                     text = state.supportingText(),
                     style = MeowTheme.typography.summary,
-                    color = content.copy(alpha = SUPPORTING_ALPHA),
+                    color = resolved.copy(alpha = SUPPORTING_ALPHA),
                 )
                 val bridgeConnected = state.moduleStatus.valueOrNull?.bridgeConnected
                 if (bridgeConnected == false) {
@@ -205,7 +212,7 @@ private fun StatusCard(state: HomeUiState, onReconnect: () -> Unit) {
                     Text(
                         text = stringResource(R.string.status_bridge_missing),
                         style = MeowTheme.typography.summary,
-                        color = content.copy(alpha = SUPPORTING_ALPHA),
+                        color = resolved.copy(alpha = SUPPORTING_ALPHA),
                     )
                 }
             }
