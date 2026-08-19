@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import io.github.lingqiqi5211.crashcatcher.R
 import io.github.lingqiqi5211.crashcatcher.ui.components.AppIcon
 import io.github.lingqiqi5211.meowui.theme.MeowTheme
+import io.github.lingqiqi5211.crashcatcher.data.daemon.DaemonConstants
 import io.github.lingqiqi5211.crashcatcher.data.daemon.NotifyMode
 import io.github.lingqiqi5211.crashcatcher.domain.model.DeviceInfo
 import io.github.lingqiqi5211.crashcatcher.domain.model.valueOrNull
@@ -372,7 +373,11 @@ internal fun AboutPage(
             )
             SettingsNavigationRow(
                 title = stringResource(R.string.about_protocol_version),
-                description = status?.protocolVersion?.toString() ?: "—",
+                // This app's own number, not the daemon's. A connection is refused outright when
+                // the two differ, so reading it from the module meant it went blank in the one
+                // situation where knowing it matters — and where it agrees, the two are equal by
+                // definition, since the handshake demands exactly that.
+                description = DaemonConstants.PROTOCOL_VERSION.toString(),
             )
             SettingsNavigationRow(
                 title = stringResource(R.string.about_module_id),
