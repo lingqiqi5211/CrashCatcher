@@ -100,7 +100,14 @@ pub fn parse_proto(bytes: &[u8]) -> Result<TombstoneReport, TombstoneError> {
         pid: i32::try_from(t.pid).unwrap_or(i32::MAX),
         tid: i32::try_from(t.tid).unwrap_or(i32::MAX),
         uid: i32::try_from(t.uid).ok(),
-        process_name: t.process_name,
+        // `argv[0]`, matching what the text format puts between `>>>` and `<<<`. Falls back to
+        // the thread name for the same reason the text parser does — a truncated report.
+        process_name: t
+            .command_line
+            .into_iter()
+            .find(|argument| !argument.is_empty())
+            .or_else(|| thread.map(|v| v.name.clone()))
+            .ok_or(TombstoneError::MissingProcessHeader)?,
         thread_name: thread.map(|v| v.name.clone()),
         signal_number: signal.map(|v| v.number),
         signal_name: signal.and_then(|v| non_empty(v.name.clone())),
@@ -301,7 +308,7 @@ mod tests {
             tid: 42,
             uid: 10123,
             selinux_label: String::new(),
-            process_name: "com.example:native".into(),
+            command_line: vec!["com.example:native".into()],
             signal_info: Some(Signal {
                 number: 11,
                 name: "SIGSEGV".into(),
@@ -323,6 +330,26 @@ mod tests {
         let r = parse_proto(&t.encode_to_vec()).unwrap();
         assert_eq!(r.signal_name.as_deref(), Some("SIGSEGV"));
         assert_eq!(r.frames[0].normalized(), "/lib/libc.so!abort");
+        assert_eq!(r.process_name, "com.example:native");
+
+        // A process invoked with arguments: the executable is argv[0]. Read as a single string
+        // this decoded to the last argument, filing the crash under a shared object.
+        let with_arguments = Tombstone {
+            command_line: vec![
+                "./bluetooth_audio_provider_session_pcm192_probe".into(),
+                "./android.hardware.bluetooth.audio@2.0-impl.so".into(),
+            ],
+            ..t
+        };
+        let r = parse_proto(&with_arguments.encode_to_vec()).unwrap();
+        assert_eq!(
+            r.process_name,
+            "./bluetooth_audio_provider_session_pcm192_probe"
+        );
+        assert_eq!(
+            r.package_name(),
+            "./bluetooth_audio_provider_session_pcm192_probe"
+        );
     }
     #[test]
     fn parses_legacy() {

@@ -34,8 +34,15 @@ pub struct Tombstone {
     pub uid: u32,
     #[prost(string, tag = "8")]
     pub selinux_label: String,
-    #[prost(string, tag = "9")]
-    pub process_name: String,
+    /// The crashing process's `argv`, not just its name.
+    ///
+    /// Repeated in the platform schema, and it has to be repeated here too. Declared as a
+    /// single string, prost applies proto3's last-one-wins rule to the repeated field and
+    /// yields the *final* argument — so a process invoked as
+    /// `./probe ./android.hardware.bluetooth.audio@2.0-impl.so` was filed under the shared
+    /// object it was passed, which is not a process at all. The executable is `argv[0]`.
+    #[prost(string, repeated, tag = "9")]
+    pub command_line: Vec<String>,
     #[prost(message, optional, tag = "10")]
     pub signal_info: Option<Signal>,
     #[prost(string, tag = "14")]
