@@ -28,6 +28,18 @@ jobs:
           submodules: recursive
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      # The tag names the release; version.properties is what both halves compile against.
+      # If they disagree the artifacts would report a version nobody asked for, so this
+      # fails before anything is built rather than after it is published.
+      - name: Check the tag against version.properties
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          declared=$(sed -n 's/^version=//p' version.properties)
+          if [ "${tag#v}" != "$declared" ]; then
+            echo "::error::tag $tag does not match version.properties ($declared)"
+            exit 1
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
