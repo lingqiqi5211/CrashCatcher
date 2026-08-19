@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Chinese copy uses full-width punctuation (，。？：；「」) throughout. Half-width
+  marks are reserved for spans that are genuinely code — package names, settings keys,
+  version formats — where a full-width comma would be part of a value nobody types.
+-->
+<resources>
+    <string name="app_name">崩溃捕手</string>
+
+    <!-- Root destinations -->
+    <string name="destination_home">概览</string>
+    <string name="destination_crashes">崩溃</string>
+    <string name="destination_apps">应用</string>
+    <string name="destination_settings">设置</string>
+
+    <!-- Module status card -->
+    <string name="status_headline_running">运行中</string>
+    <string name="status_headline_degraded">采集受限</string>
+    <string name="status_headline_unreachable">未连接守护进程</string>
+    <string name="status_headline_checking">检查中</string>
+    <string name="status_supporting_collectors">%1$d/%2$d 个采集源已收到数据</string>
+    <string name="status_supporting_running">已记录 %1$d 条崩溃</string>
+    <string name="status_supporting_degraded">%1$d 个采集源不可用</string>
+    <string name="status_supporting_unreachable">模块未安装，或守护进程未运行。点击重试</string>
+    <string name="status_bridge_connected">通知桥已连接</string>
+    <string name="status_bridge_missing">通知桥未连接，提醒会延迟</string>
+
+    <!-- Collector names -->
+    <string name="collector_events">事件日志</string>
+    <string name="collector_crash_buffer">崩溃日志</string>
+    <string name="collector_dropbox">DropBox</string>
+    <string name="collector_tombstone">Tombstone</string>
+    <string name="collector_anr_file">ANR 转储</string>
+    <string name="collector_never_received">尚未收到数据</string>
+    <string name="collector_idle">暂未触发</string>
+    <string name="collector_error">读取受阻</string>
+    <string name="collector_disabled">已关闭</string>
+    <string name="collector_receiving">正常</string>
+
+    <!-- Storage -->
+    <string name="storage_groups">崩溃分组</string>
+    <string name="storage_records">崩溃记录</string>
+    <string name="storage_payload_bytes">日志占用</string>
+    <string name="storage_total_bytes">存储占用</string>
+    <string name="storage_database_bytes">索引占用</string>
+    <string name="storage_evicted">已回收日志</string>
+
+    <!-- Home sections -->
+    <string name="home_section_collectors">采集源</string>
+    <string name="home_section_storage">存储</string>
+    <string name="home_section_about">关于</string>
+    <string name="home_section_device">设备</string>
+    <string name="home_manager_version">管理器版本</string>
+    <string name="home_android_version">Android 版本</string>
+    <string name="home_device_model">设备</string>
+    <string name="home_abi">ABI</string>
+    <string name="home_fingerprint">构建指纹</string>
+
+    <!-- Crash list -->
+    <string name="crashes_search_placeholder">搜索包名或异常</string>
+    <string name="crashes_search_cancel">取消</string>
+    <string name="crashes_tab_all">全部</string>
+    <string name="crashes_tab_java">Java</string>
+    <string name="crashes_tab_anr">ANR</string>
+    <string name="crashes_tab_native">Native</string>
+    <string name="crashes_kind_wtf">WTF</string>
+    <string name="crashes_empty_title">没有崩溃记录</string>
+    <string name="crashes_empty_description">采集正常，暂时什么都没发生。</string>
+    <string name="crashes_filtered_empty_title">没有匹配的崩溃</string>
+    <string name="crashes_filtered_empty_description">换个关键词或切换分类试试。</string>
+    <string name="crashes_error_title">读取崩溃列表失败</string>
+    <string name="crashes_occurrence">%1$d 次</string>
+    <string name="crashes_self_handled">应用自行处理</string>
+    <string name="crashes_filter">筛选</string>
+    <string name="crashes_only_self_handled">仅应用自处理</string>
+
+    <!-- Detail -->
+    <string name="detail_copy">复制</string>
+    <string name="detail_share">分享</string>
+    <string name="detail_export">导出</string>
+    <string name="detail_delete">删除</string>
+    <string name="detail_expand_framework_frames">展开 %1$d 个框架栈帧</string>
+    <string name="detail_collapse_framework_frames">折叠框架栈帧</string>
+    <string name="detail_payload_truncated">日志过大，已截断</string>
+    <string name="detail_payload_truncated_body">这条日志超过了单条上限，已截断保存。</string>
+    <string name="detail_payload_evicted">日志已因存储上限回收</string>
+    <string name="detail_payload_evicted_body">日志正文已因存储上限被回收，记录本身仍保留。</string>
+    <string name="detail_wrap_lines">自动换行</string>
+    <string name="detail_copied">日志已复制</string>
+    <string name="detail_copy_empty">这条记录没有日志正文</string>
+    <string name="detail_copy_failed">日志太大，复制失败</string>
+    <string name="detail_share_subject">%1$s 崩溃日志</string>
+    <string name="detail_share_failed">分享失败</string>
+    <string name="detail_fields_copy_title">复制哪些信息</string>
+    <string name="detail_fields_share_title">分享哪些信息</string>
+    <string name="export_field_device_brand">设备品牌</string>
+    <string name="export_field_device_model">设备型号</string>
+    <string name="export_field_build_display">系统版本</string>
+    <string name="export_field_package_name">应用包名</string>
+
+    <!-- Group detail -->
+    <string name="group_records">崩溃记录</string>
+    <string name="group_package">包名</string>
+    <string name="group_occurrence">发生次数</string>
+    <string name="group_first_seen">首次</string>
+    <string name="group_last_seen">最近</string>
+    <string name="group_user">用户</string>
+    <string name="group_pruned">另有 %1$d 次已超出保留上限，仅计入次数</string>
+    <string name="record_payload_gone">日志已回收</string>
+    <string name="record_repeating">重复</string>
+
+    <!-- Apps -->
+    <string name="apps_search_placeholder">搜索应用</string>
+    <string name="apps_empty_title">没有应用崩溃过</string>
+    <string name="apps_empty_description">采集正常，暂时什么都没发生。</string>
+    <string name="apps_filtered_empty_title">没有匹配的应用</string>
+    <string name="apps_filtered_empty_description">换个关键词试试。</string>
+    <string name="apps_error_title">读取应用列表失败</string>
+    <string name="app_override_ignored">已忽略</string>
+    <string name="app_override_custom">已单独设置</string>
+    <string name="app_override_muted">已静音</string>
+    <string name="app_section_behaviour">行为</string>
+    <string name="app_section_actions">操作</string>
+    <string name="app_section_history">崩溃历史</string>
+    <string name="app_notify_follow_global">跟随全局</string>
+    <string name="app_ignore">完全忽略</string>
+    <string name="app_ignore_summary">不记录这个应用的任何崩溃</string>
+    <string name="app_mute">静音</string>
+    <string name="app_mute_none">不静音</string>
+    <string name="app_mute_until_unlock">至下次解锁</string>
+    <string name="app_mute_until_restart">至下次重启</string>
+    <string name="app_reopen">重新打开应用</string>
+    <string name="app_reopen_summary">由守护进程以 root 启动</string>
+    <string name="app_group_summary">%1$d 次 · %2$s</string>
+
+    <!-- Settings -->
+    <string name="settings_section_general">通用</string>
+    <string name="settings_section_behaviour">行为</string>
+    <string name="settings_section_about">关于</string>
+    <string name="settings_about_summary">版本、设备与模块信息</string>
+    <string name="settings_capture_summary">决定哪些异常会被记录</string>
+    <string name="settings_capture_kinds">异常类型</string>
+    <string name="settings_capture_scope">范围</string>
+    <string name="settings_notify_summary">崩溃发生时如何提醒</string>
+    <string name="settings_notify_scope">范围</string>
+    <string name="settings_dialog_summary">替换系统的「已停止运行」弹窗</string>
+    <string name="settings_storage_manage">存储与清理</string>
+    <string name="settings_storage_summary">保留上限、占用与清空记录</string>
+    <string name="settings_storage_usage">当前占用</string>
+    <string name="settings_storage_limits">保留上限</string>
+    <string name="settings_storage_cleanup">清理</string>
+    <string name="settings_storage_records_summary">%1$d 条记录，归为 %2$d 个分组</string>
+    <string name="settings_retention_days_summary">超过这个天数的记录会被自动删除</string>
+    <string name="settings_max_records_total_summary">记录总数超过上限时，先删最旧的</string>
+    <string name="settings_delete_all_summary">删除全部崩溃记录与日志正文</string>
+    <string name="settings_include_system_apps_summary">系统应用的崩溃通常与你无关，默认不记录</string>
+    <string name="settings_only_foreground_summary">只在崩溃的应用正处于前台时提醒</string>
+    <string name="settings_only_main_process_summary">忽略后台进程的崩溃提醒，记录不受影响</string>
+    <string name="about_section_versions">版本</string>
+    <string name="about_section_device">设备</string>
+    <string name="about_daemon_version">守护进程版本</string>
+    <string name="about_daemon_unreachable">未连接</string>
+    <string name="about_protocol_version">协议版本</string>
+    <string name="about_module_id">模块 ID</string>
+    <string name="about_section_source">源码</string>
+    <string name="about_repository">GitHub 仓库</string>
+    <string name="about_license">许可证</string>
+    <string name="about_license_value">AGPL-3.0</string>
+    <string name="about_section_credits">开源引用</string>
+    <string name="settings_section_capture">采集</string>
+    <string name="settings_section_notify">提醒</string>
+    <string name="settings_section_dialog">系统弹窗</string>
+    <string name="settings_section_storage">存储</string>
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_section_tools">工具</string>
+    <string name="settings_appearance_summary">主题、配色与界面风格</string>
+    <string name="settings_reconnect">重连守护进程</string>
+    <string name="settings_reconnect_summary">断开并重新连接守护进程</string>
+    <string name="settings_capture_java">Java 异常</string>
+    <string name="settings_capture_anr">ANR</string>
+    <string name="settings_capture_native">Native 崩溃</string>
+    <string name="settings_capture_self_handled">应用自行处理的异常</string>
+    <string name="settings_include_system_apps">包含系统应用</string>
+    <string name="settings_only_main_process">仅主进程</string>
+    <string name="settings_only_foreground">仅前台应用</string>
+    <string name="settings_notify_mode">提醒方式</string>
+    <string name="settings_takeover_dialog">接管系统崩溃弹窗</string>
+    <string name="settings_takeover_dialog_warning">开启后系统不再显示「已停止运行」。代价：崩溃按「强制关闭」处理，ANR 会直接结束应用而没有「等待」选项。记录不受影响。</string>
+    <string name="settings_takeover_unsupported">当前系统不支持接管</string>
+    <string name="settings_takeover_conflict">接管未生效</string>
+    <string name="settings_takeover_conflict_body">系统的 anr_show_background 处于开启状态，会覆盖弹窗抑制。关闭它后接管才会生效。</string>
+    <string name="settings_retention_days">保留天数</string>
+    <string name="settings_max_records_per_group">每组保留条数</string>
+    <string name="settings_max_records_total">总记录上限</string>
+    <string name="settings_max_payload_total">日志总容量</string>
+    <string name="settings_delete_all">清空全部记录</string>
+    <string name="settings_delete_all_confirm">删除所有崩溃记录？此操作无法撤销。</string>
+
+    <!-- Notify modes -->
+    <string name="notify_mode_dialog">弹窗</string>
+    <string name="notify_mode_notification">通知</string>
+    <string name="notify_mode_toast">Toast</string>
+    <string name="notify_mode_nothing">仅记录</string>
+
+    <!-- Appearance page labels (MeowUI defaults are English) -->
+    <string name="appearance_theme_color">主题色</string>
+    <string name="appearance_theme_mode">深浅模式</string>
+    <string name="appearance_mode_system">跟随系统</string>
+    <string name="appearance_mode_light">浅色</string>
+    <string name="appearance_mode_dark">深色</string>
+    <string name="appearance_amoled">纯黑深色</string>
+    <string name="appearance_amoled_summary">深色主题下使用纯黑背景</string>
+    <string name="appearance_colors">配色</string>
+    <string name="appearance_palette_style">调色板风格</string>
+    <string name="appearance_color_spec">色彩标准</string>
+    <string name="appearance_monet">Monet 取色</string>
+    <string name="appearance_monet_summary">从壁纸或自定义种子色生成配色</string>
+    <string name="appearance_interface">界面</string>
+    <string name="appearance_interface_style">界面风格</string>
+    <string name="appearance_predictive_back">预测式返回</string>
+    <string name="appearance_predictive_back_summary">侧滑返回时预览目标页面</string>
+    <string name="appearance_scale">界面缩放</string>
+    <string name="appearance_scale_summary">调整整个界面的大小</string>
+    <string name="appearance_custom_color">自定义颜色</string>
+    <string name="appearance_section_chrome">界面元素</string>
+    <string name="appearance_floating_bar">悬浮底栏</string>
+    <string name="appearance_floating_bar_summary">底栏收成悬浮胶囊，内容从其下方穿过</string>
+    <string name="appearance_blur">背景模糊</string>
+    <string name="appearance_blur_summary">悬浮控件对身后内容做模糊；设备不支持时自动退回不透明底色</string>
+
+    <!-- Shared content states -->
+    <string name="content_empty_title">没有内容</string>
+    <string name="content_empty_description">这里暂时什么都没有。</string>
+
+    <!-- Common -->
+    <string name="action_confirm">确定</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_retry">重试</string>
+    <string name="loading">载入中</string>
+    <string name="refresh_pull">下拉刷新</string>
+    <string name="refresh_release">松手刷新</string>
+    <string name="refresh_refreshing">正在刷新</string>
+    <string name="refresh_done">已刷新</string>
+    <!-- The crash alert shown in place of the system's "已停止运行" box -->
+    <string name="alert_title">%1$s 已崩溃</string>
+    <string name="alert_title_unknown">应用已崩溃</string>
+    <string name="alert_message_unknown">正在读取崩溃详情…</string>
+    <string name="alert_open_details">查看日志</string>
+    <string name="alert_reopen">重新打开</string>
+    <string name="alert_mute">静音至解锁</string>
+    <string name="alert_close">关闭</string>
+    <string name="alert_muted">已静音，解锁后恢复提醒</string>
+    <string name="alert_mute_failed">静音失败</string>
+    <string name="alert_reopen_failed">无法重新打开该应用</string>
+
+    <string name="reconnect_succeeded">已重新连接守护进程</string>
+    <string name="reconnect_failed">重连失败，守护进程未响应</string>
+
+    <!-- Errors: short title plus one sentence saying what to do about it -->
+    <string name="error_unauthorized">签名校验未通过，守护进程拒绝了连接</string>
+    <string name="error_unavailable">守护进程暂时不可用</string>
+    <string name="error_version_mismatch">模块与管理器版本不匹配</string>
+    <string name="error_generic">发生错误</string>
+    <string name="error_title_unreachable">未连接守护进程</string>
+    <string name="error_body_unreachable">模块可能未安装，或守护进程未在运行。</string>
+    <string name="error_title_unauthorized">签名校验未通过</string>
+    <string name="error_body_unauthorized">守护进程只接受与模块内固定证书一致的管理器。请安装官方签名的版本。</string>
+    <string name="error_title_version">版本不匹配</string>
+    <string name="error_body_version">模块与管理器的协议版本不同，请把较旧的一方更新到同一版本。</string>
+    <string name="error_title_unavailable">守护进程暂时不可用</string>
+    <string name="error_body_unavailable">它正在启动或某个依赖尚未就绪，稍后重试。</string>
+    <string name="error_title_protocol">协议解析失败</string>
+    <string name="error_body_protocol">收到的数据无法解析，通常意味着模块与管理器版本不一致。</string>
+    <string name="error_title_generic">出错了</string>
+    <string name="error_body_generic">请稍后重试。</string>
+</resources>

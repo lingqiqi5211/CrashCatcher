@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Base.Theme.CrashCatcher" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+
+    <style name="Theme.CrashCatcher" parent="Base.Theme.CrashCatcher" />
+
+    <!--
+      The crash alert's theme.
+
+      Floating and transparent so the alert reads as an interruption over whatever the
+      user was doing, the way the system's own "已停止运行" box does — the activity behind
+      it stays visible. `windowIsTranslucent` is what keeps that activity drawn rather
+      than blanked, and no dim is set here because the Compose dialog draws its own
+      scrim.
+    -->
+    <style name="Theme.CrashCatcher.Alert" parent="Base.Theme.CrashCatcher">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

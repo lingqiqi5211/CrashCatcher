@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the share provider is allowed to serve.
+
+  One directory under the cache, holding nothing but the copy of a log that is on its way
+  to another app. Nothing else in the app's storage is reachable through the provider —
+  the crash payloads themselves live in the daemon's store, which this app never opens by
+  path anyway.
+-->
+<paths>
+    <cache-path name="shares" path="shares/" />
+</paths>
