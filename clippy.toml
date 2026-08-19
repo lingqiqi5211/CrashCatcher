@@ -1,0 +1,8 @@
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+  { path = "std::process::abort", reason = "the daemon must flush tracing and honour post-conditions before dying; propagate an Err instead" },
+  { path = "std::process::exit", reason = "bypasses tracing flush and Drop impls (notably the SQLite connection and payload temp files); propagate an Err to main instead" },
+]

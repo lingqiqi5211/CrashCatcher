@@ -1,0 +1,74 @@
+[workspace]
+members = [
+  "crates/cch_model",
+  "crates/cch_wire",
+  "crates/cch_config",
+  "crates/cch_store",
+  "crates/cch_logd",
+  "crates/cch_dropbox",
+  "crates/cch_tombstone",
+  "crates/cch_anrfile",
+  "crates/cch_merge",
+  "crates/cch_packages",
+  "crates/cch_apk_sig",
+  "crates/cch_auth",
+  "crates/cch_watcher",
+  "crates/cch_settings",
+  "crates/cch_bridge_supervisor",
+  "crates/cch_daemond",
+  "crates/cch_packager",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = ""
+
+[workspace.dependencies]
+hex = "0.4"
+libc = "0.2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tempfile = "3"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+zstd = "0.13"
+
+cch_model = { path = "crates/cch_model" }
+cch_wire = { path = "crates/cch_wire" }
+cch_config = { path = "crates/cch_config" }
+cch_store = { path = "crates/cch_store" }
+cch_logd = { path = "crates/cch_logd" }
+cch_dropbox = { path = "crates/cch_dropbox" }
+cch_tombstone = { path = "crates/cch_tombstone" }
+cch_anrfile = { path = "crates/cch_anrfile" }
+cch_merge = { path = "crates/cch_merge" }
+cch_packages = { path = "crates/cch_packages" }
+cch_apk_sig = { path = "crates/cch_apk_sig" }
+cch_auth = { path = "crates/cch_auth" }
+cch_watcher = { path = "crates/cch_watcher" }
+cch_settings = { path = "crates/cch_settings" }
+cch_bridge_supervisor = { path = "crates/cch_bridge_supervisor" }
+cch_daemond = { path = "crates/cch_daemond" }
+cch_packager = { path = "crates/cch_packager" }
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+exit = "deny"
+disallowed_methods = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
