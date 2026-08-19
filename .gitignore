@@ -1,0 +1,25 @@
+/target
+**/*.rs.bk
+
+# Gradle / Android
+.gradle/
+build/
+local.properties
+keystore.properties
+*.jks
+*.keystore
+.kotlin/
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Release artifacts are rebuilt by `cch-packager`, and a stale zip carries a stale
+# signing pin — publishing one would ship a module trusting the wrong key.
+/dist/
+
+# Session notes, not part of the project.
+/.codex-context/
+
+# Design notes kept locally, not part of the published tree.
+/docs/

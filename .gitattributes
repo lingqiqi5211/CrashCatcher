@@ -1,0 +1,17 @@
+# Normalise line endings in the repository, so a checkout on Windows and one on Linux
+# produce the same bytes for the CI that builds both halves of this project.
+* text=auto eol=lf
+
+# Shell scripts run on the device: CRLF would make the shebang unparseable and the
+# module would fail to start with nothing but "not found" in the log.
+*.sh text eol=lf
+
+*.jar binary
+*.jks binary
+*.keystore binary
+*.dex binary
+*.png binary
+*.zip binary
+*.apk binary
+gradlew text eol=lf
+gradlew.bat text eol=crlf
