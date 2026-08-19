@@ -83,27 +83,3 @@ if (hostSdkDir != null) {
 }
 
 includeBuild(meowUiDir)
-
-// miuix comes in here as well, even though MeowUI already includes it.
-//
-// Substitution from a *nested* included build does not reach this build's dependency
-// graph: MeowUI resolves `top.yukonga.miuix.kmp:*` against its own included copy, but
-// when MeowUI is itself an included build, those coordinates resolve here — and since
-// 0.9.4-rc01 they exist on Maven Central, so they resolve to the published artifact
-// instead of failing loudly. The Android variant of `miuix-preference` there does not
-// carry the classes MeowUI compiles against, and the build dies with a page of
-// "Unresolved reference 'preference'" pointing at MeowUI's own sources.
-//
-// Including it directly makes the substitution apply at this level too, so the whole
-// tree compiles one miuix — the one the submodule is checked out at.
-val miuixDir = meowUiDir.resolve("third_party/miuix")
-require(miuixDir.resolve("settings.gradle.kts").isFile) {
-    """
-    miuix is not checked out at ${miuixDir.absolutePath}
-
-        git submodule update --init --recursive
-
-    (from the repository root, or clone with `git clone --recurse-submodules`.)
-    """.trimIndent()
-}
-includeBuild(miuixDir)
