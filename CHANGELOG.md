@@ -7,6 +7,8 @@
 - 带参数启动的进程不再被记到它的参数(一个 .so)名下
 - 「从未产生日志」与「日志已回收」现在分开显示
 
+⚠ 模块与管理器必须一起更新:本版协议从 1 升到 2,握手要求两侧协议号完全相同,只换一半会连不上并提示「版本不匹配」。
+
 回退旧版本前请先删除 /data/adb/crash.catcher/store/crashes.db:存储结构只升不降,旧版守护进程读到会拒绝启动。
 
 - ci: say what changed, and stop curl reading the caption as a filename
