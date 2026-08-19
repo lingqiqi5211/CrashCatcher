@@ -76,10 +76,17 @@ struct BridgeArgs {
     output: PathBuf,
 }
 
+/// Named on the command line exactly as Android names them.
+///
+/// Spelled out rather than left to clap's kebab-case, which would derive `x86-64` from
+/// `X86_64` — close enough to look right in a workflow and wrong enough to be rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Abi {
+    #[value(name = "arm64-v8a")]
     Arm64V8a,
+    #[value(name = "armeabi-v7a")]
     ArmeabiV7a,
+    #[value(name = "x86_64")]
     X86_64,
 }
 
@@ -441,7 +448,7 @@ fn create_zip(root: &Path, output: &Path) -> Result<(), PackagerError> {
 /// `version.properties` for the name, and both derive `versionCode` from the commit count,
 /// so the two numbers are the same number.
 fn stamp_version(workspace: &Path, module_prop: &Path) -> Result<(), PackagerError> {
-    let version = repository_version(workspace)?;
+    let version = version_label(workspace)?;
     let code = commit_count(workspace);
 
     let original = fs::read_to_string(module_prop)?;
@@ -458,20 +465,45 @@ fn stamp_version(workspace: &Path, module_prop: &Path) -> Result<(), PackagerErr
     Ok(())
 }
 
+/// What the root manager shows as the module's version.
+///
+/// On a tag it is the plain version. Anywhere else it carries the commit count and the short
+/// hash — `0.1.0-r15-gd20c298` — because CI posts a package on every push, and a list of
+/// modules all claiming "0.1.0" gives no way to tell which build is installed. The hash is
+/// what turns a bug report into a diff.
+fn version_label(workspace: &Path) -> Result<String, PackagerError> {
+    let version = repository_version(workspace)?;
+    if git(workspace, &["describe", "--exact-match", "--tags", "HEAD"]).is_some() {
+        return Ok(version);
+    }
+    let Some(hash) = git(workspace, &["rev-parse", "--short=7", "HEAD"]) else {
+        return Ok(version);
+    };
+    Ok(format!("{version}-r{}-g{hash}", commit_count(workspace)))
+}
+
+/// Runs git and returns trimmed stdout, or None when git or the repository is unavailable.
+fn git(workspace: &Path, arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(workspace)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// The commit count, which is what both halves use as `versionCode`.
 ///
 /// Falls back to 1 when git cannot answer — a source tarball with no history, say. **A
 /// shallow clone answers 1 too**, which is why CI checks out with full history; without it
 /// every build would ship as the first one.
 fn commit_count(workspace: &Path) -> u32 {
-    Command::new("git")
-        .args(["rev-list", "--count", "HEAD"])
-        .current_dir(workspace)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|text| text.trim().parse().ok())
+    git(workspace, &["rev-list", "--count", "HEAD"])
+        .and_then(|text| text.parse().ok())
         .unwrap_or(1)
 }
 

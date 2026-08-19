@@ -1,13 +1,18 @@
 # Checks, builds and publishes.
 #
-# Scoped to what changed. The two halves are independent artifacts — the manager APK and the
-# root module — so a Kotlin-only commit has no reason to cross-compile three daemon ABIs, and
-# a daemon-only commit has no reason to spend three minutes in R8.
+# Two axes keep this short:
 #
-# The protocol is the exception: `crates/cch_wire` is implemented twice, once in Rust and
-# once in Kotlin, and the vector tests are the only thing keeping the two in step. Touching
-# it therefore builds and ships both halves, because a version skew between them is exactly
-# the failure the pairing is meant to prevent.
+# - **Scoped.** The manager APK and the root module are independent artifacts, so a
+#   Kotlin-only commit does not cross-compile three daemon ABIs and a daemon-only commit does
+#   not spend three minutes in R8. The protocol is the exception — `crates/cch_wire` is
+#   implemented twice and only the vector tests keep the two in step, so touching it ships
+#   both halves.
+# - **Parallel.** Checks, APK and module are three jobs that do not wait on each other, so
+#   the wall clock is the slowest one rather than their sum. Publishing collects whatever the
+#   build actually produced.
+#
+# Full ABI coverage costs three cross-compiles and only matters for something people install,
+# so day-to-day pushes build arm64 alone and a tag builds all three.
 name: CI
 
 on:
@@ -26,13 +31,14 @@ jobs:
     name: Scope
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      manager: ${{ steps.filter.outputs.manager }}
+      rust: ${{ steps.decide.outputs.rust }}
+      manager: ${{ steps.decide.outputs.manager }}
       apk: ${{ steps.decide.outputs.apk }}
       module: ${{ steps.decide.outputs.module }}
+      abi: ${{ steps.decide.outputs.abi }}
     steps:
-      # Full history: the range below is diffed with git, and a shallow clone cannot see
-      # where the push started.
+      # Full history: the range below is diffed with git, and a shallow clone cannot see where
+      # the push started.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -41,48 +47,38 @@ jobs:
       #
       # The whole push, not its tip. A push carrying "fix the daemon" then "tweak a screen"
       # would otherwise be judged on the screen alone and ship no module — the packages would
-      # silently fall out of step with the commits.
+      # silently fall out of step with the commits inside them.
       #
       # Anything that makes the range unreadable falls back to building both halves. A missed
-      # package is a release that quietly lacks a fix; an extra package costs three minutes of
+      # package is a release quietly lacking a fix; an extra package costs a few minutes of
       # CI. The cases: a brand-new branch has no `before`, a force-push leaves a `before` that
-      # is no longer an ancestor, and a garbage-collected or never-fetched `before` cannot be
-      # read at all.
+      # is no longer an ancestor, and a garbage-collected `before` cannot be read at all.
       - name: Resolve the comparison range
         id: range
         env:
           BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "base=${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
-            echo "reason=pull request against ${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          emit() {
+            echo "base=$1" >> "$GITHUB_OUTPUT"
+            echo "reason=$2" >> "$GITHUB_OUTPUT"
             exit 0
+          }
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            emit "${{ github.base_ref }}" "pull request against ${{ github.base_ref }}"
           fi
           if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
-            echo "base=" >> "$GITHUB_OUTPUT"
-            echo "reason=tag build, everything" >> "$GITHUB_OUTPUT"
-            exit 0
+            emit "" "tag build, everything"
           fi
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "base=" >> "$GITHUB_OUTPUT"
-            echo "reason=no before commit, everything" >> "$GITHUB_OUTPUT"
-            exit 0
+            emit "" "no before commit, everything"
           fi
           if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            echo "base=" >> "$GITHUB_OUTPUT"
-            echo "reason=before commit is unreachable, everything" >> "$GITHUB_OUTPUT"
-            exit 0
+            emit "" "before commit is unreachable, everything"
           fi
           if ! git merge-base --is-ancestor "$BEFORE" "${{ github.sha }}"; then
-            echo "base=" >> "$GITHUB_OUTPUT"
-            echo "reason=history was rewritten, everything" >> "$GITHUB_OUTPUT"
-            exit 0
+            emit "" "history was rewritten, everything"
           fi
-          echo "base=$BEFORE" >> "$GITHUB_OUTPUT"
-          echo "reason=$(git rev-list --count "$BEFORE..${{ github.sha }}") commit(s) since $BEFORE" >> "$GITHUB_OUTPUT"
-
-      - name: Report the range
-        run: echo "scoping by ${{ steps.range.outputs.reason }}"
+          emit "$BEFORE" "$(git rev-list --count "$BEFORE..${{ github.sha }}") commit(s) since ${BEFORE:0:7}"
 
       - uses: dorny/paths-filter@v4
         id: filter
@@ -106,9 +102,10 @@ jobs:
               - 'apps/manager/**'
             everything:
               - 'version.properties'
-              - '.github/workflows/**'
+              - '.github/**'
 
-      # A tag builds both halves whatever it touched: a release is the pair, not a delta.
+      # Written as `if` blocks on purpose: the step runs under `bash -e`, where a trailing
+      # `[ x ] && y=true` exits non-zero the moment the test is false and fails the job.
       - name: Decide what to build
         id: decide
         env:
@@ -118,11 +115,10 @@ jobs:
           MODULE: ${{ steps.filter.outputs.module }}
           MANAGER: ${{ steps.filter.outputs.manager }}
           EVERYTHING: ${{ steps.filter.outputs.everything }}
-        # Written as `if` blocks on purpose: the step runs under `bash -e`, where a trailing
-        # `[ x ] && y=true` exits non-zero the moment the test is false and fails the job.
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           all=false
-          # No usable range means the filter never ran, and nothing was ruled out.
+          # No usable range means the filter never ran and nothing was ruled out.
           if [ -z "${{ steps.range.outputs.base }}" ]; then all=true; fi
           if [ "$WIRE" = "true" ] || [ "$EVERYTHING" = "true" ]; then all=true; fi
 
@@ -133,19 +129,31 @@ jobs:
             module=true
           fi
 
-          echo "apk=$apk" >> "$GITHUB_OUTPUT"
-          echo "module=$module" >> "$GITHUB_OUTPUT"
-          echo "APK=$apk module=$module (wire=$WIRE rust=$RUST bridge=$BRIDGE module=$MODULE manager=$MANAGER)"
+          abi=arm64-v8a
+          if [ "$IS_TAG" = "true" ]; then abi=arm64-v8a,armeabi-v7a,x86_64; fi
 
-  rust:
-    name: Rust
+          {
+            echo "rust=${RUST:-$all}"
+            echo "manager=${MANAGER:-$all}"
+            echo "apk=$apk"
+            echo "module=$module"
+            echo "abi=$abi"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::${{ steps.range.outputs.reason }} → apk=$apk module=$module abi=$abi"
+
+  checks:
+    name: Rust checks
     needs: scope
     if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
+      # Its own cache slot: these are debug/test artifacts, and sharing a slot with the
+      # release cross-builds below would have the two evicting each other every run.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: checks
 
       - name: Format
         run: cargo fmt --all --check
@@ -158,44 +166,13 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  manager:
-    name: Manager
+  apk:
+    name: Manager APK
     needs: scope
-    if: needs.scope.outputs.manager == 'true'
+    if: needs.scope.outputs.apk == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - uses: gradle/actions/setup-gradle@v6
-
-      # No keystore here: unit tests and compilation do not care which key signs the APK.
-      # Only a build that has to talk to the daemon needs the pinned certificate.
-      - name: Test
-        working-directory: apps/manager
-        run: ./gradlew --no-daemon testDebugUnitTest
-
-  package:
-    name: Package
-    needs: [scope, rust, manager]
-    # Runs when either half is wanted, and tolerates the check jobs being skipped — `always()`
-    # alone would also run it after a genuine failure, hence the explicit result test.
-    if: |
-      always() &&
-      (needs.scope.outputs.apk == 'true' || needs.scope.outputs.module == 'true') &&
-      needs.rust.result != 'failure' && needs.manager.result != 'failure' &&
-      needs.rust.result != 'cancelled' && needs.manager.result != 'cancelled'
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      # Full history: versionCode is the commit count, and a shallow clone counts 1.
+      # versionCode is the commit count, and a shallow clone counts 1.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -208,125 +185,136 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      - uses: nttld/setup-ndk@v1
-        id: ndk
-        if: needs.scope.outputs.module == 'true'
+      - uses: ./.github/actions/signing
         with:
-          ndk-version: r28
+          keystore-base64: ${{ secrets.KEYSTORE_BASE64 }}
+          keystore-password: ${{ secrets.KEYSTORE_PASSWORD }}
+          key-alias: ${{ secrets.KEY_ALIAS }}
+          key-password: ${{ secrets.KEY_PASSWORD }}
 
-      - uses: Swatinem/rust-cache@v2
+      # One Gradle invocation for the tests and the APK: a second one pays for configuration,
+      # dependency resolution and a cold daemon all over again.
+      - name: Test and assemble
+        working-directory: apps/manager
+        run: ./gradlew --no-daemon testDebugUnitTest assembleRelease
 
-      - name: Resolve the version
-        id: version
+      - name: Name the artifact
         run: |
-          name=$(sed -n 's/^version=//p' version.properties)
-          code=$(git rev-list --count HEAD)
-          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
-            tag="${{ github.ref_name }}"
-            if [ "${tag#v}" != "$name" ]; then
-              echo "::error::tag $tag does not match version.properties ($name)"
-              exit 1
-            fi
-          fi
-          echo "version=$name" >> "$GITHUB_OUTPUT"
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "suffix=$name-r$code" >> "$GITHUB_OUTPUT"
-
-      # The keystore never lives in the repository. It arrives base64-encoded in a secret, is
-      # written outside the checkout, and keystore.properties is generated to point at it —
-      # the same file a local build uses, so both paths sign identically.
-      - name: Restore the signing key
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::error::KEYSTORE_BASE64 is not set — the daemon only trusts the pinned certificate."
-            exit 1
-          fi
-          keystore="$RUNNER_TEMP/release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$keystore"
-          cat > apps/manager/keystore.properties <<PROPERTIES
-          storeFile=$keystore
-          storePassword=$KEYSTORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
-          PROPERTIES
-          # The module pins whatever certificate signs the manager. When this build produces
-          # an APK the pin comes from it; when it only produces a module there is no APK to
-          # read, so the fingerprint is taken from the keystore itself — same certificate,
-          # and still not a value copied into the repository by hand.
-          keytool -list -v -keystore "$keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" \
-            | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-Z' 'a-z' > "$RUNNER_TEMP/pin"
-          echo "pin=$(cat "$RUNNER_TEMP/pin")" >> "$GITHUB_OUTPUT"
-        id: signing
-
-      - name: Build the manager APK
-        if: needs.scope.outputs.apk == 'true'
-        run: cargo run --release -p cch_packager -- manager-apk
-
-      - name: Build the module
-        if: needs.scope.outputs.module == 'true'
-        env:
-          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
-        run: |
-          if [ "${{ needs.scope.outputs.apk }}" = "true" ]; then
-            cargo run --release -p cch_packager -- module --manager-apk dist/crashcatcher.apk
-          else
-            cargo run --release -p cch_packager -- module --manager-cert-sha256 "${{ steps.signing.outputs.pin }}"
-          fi
-
-      - name: Name the artifacts
-        id: artifacts
-        run: |
-          suffix="${{ steps.version.outputs.suffix }}"
-          if [ -f dist/crashcatcher.apk ]; then
-            mv dist/crashcatcher.apk "dist/CrashCatcher-$suffix.apk"
-          fi
-          if [ -f dist/crashcatcher-module.zip ]; then
-            mv dist/crashcatcher-module.zip "dist/CrashCatcher-module-$suffix.zip"
-          fi
+          mkdir -p dist
+          suffix="$(sed -n 's/^version=//p' version.properties)-r$(git rev-list --count HEAD)"
+          cp apps/manager/app/build/outputs/apk/release/*.apk "dist/CrashCatcher-$suffix.apk"
           ls -1 dist/
 
       - uses: actions/upload-artifact@v7
         with:
-          name: crashcatcher-${{ steps.version.outputs.suffix }}
+          name: apk
           path: dist/*
+          if-no-files-found: error
 
-      # The changelog rides on the *last* document, because Telegram shows a media group's
-      # caption under the final item — attaching it to the first leaves the text stranded
-      # above the files on most clients.
-      - name: Post to the channel
-        if: github.event_name != 'pull_request'
+  module:
+    name: Root module
+    needs: scope
+    if: needs.scope.outputs.module == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: module
+          # The cross-compiled targets live here, and the key has to change with the ABI set
+          # or a tag build would restore an arm64-only cache and rebuild the other two anyway.
+          key: ${{ needs.scope.outputs.abi }}
+
+      - uses: ./.github/actions/signing
+        id: signing
+        with:
+          keystore-base64: ${{ secrets.KEYSTORE_BASE64 }}
+          keystore-password: ${{ secrets.KEYSTORE_PASSWORD }}
+          key-alias: ${{ secrets.KEY_ALIAS }}
+          key-password: ${{ secrets.KEY_PASSWORD }}
+
+      # The pin comes from the keystore, not from an APK: this job does not build one, and the
+      # certificate is the same either way. That is what lets the two package jobs run in
+      # parallel instead of the module waiting on R8.
+      - name: Build the module
         env:
-          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SUFFIX: ${{ steps.version.outputs.suffix }}
-          REPOSITORY: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          BEFORE: ${{ github.event.before }}
-          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        run: bash .github/scripts/post-telegram.sh
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          cargo run --release -p cch_packager -- module \
+            --manager-cert-sha256 "${{ steps.signing.outputs.pin }}" \
+            --abi "${{ needs.scope.outputs.abi }}"
 
-  release:
-    name: Release
-    needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
+      - name: Name the artifact
+        run: |
+          suffix="$(sed -n 's/^version=//p' version.properties)-r$(git rev-list --count HEAD)"
+          mv dist/crashcatcher-module.zip "dist/CrashCatcher-module-$suffix.zip"
+          ls -1 dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: module
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [scope, checks, apk, module]
+    # Tolerates the jobs that were skipped, but not one that actually failed.
+    if: |
+      always() && github.event_name != 'pull_request' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
+      (needs.apk.result == 'success' || needs.module.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v7
         with:
-          pattern: crashcatcher-*
           merge-multiple: true
           path: dist
 
-      - uses: softprops/action-gh-release@v3
+      - name: Post to the channel
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: bash .github/scripts/post-telegram.sh
+
+      # Only a tag becomes a release, and only a release moves update.json — the root manager
+      # polls it, and pointing it at a per-push build would offer everyone an update to
+      # whatever landed on main five minutes ago.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          name: CrashCatcher ${{ needs.package.outputs.version }}
+          name: CrashCatcher ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Point update.json at it
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/update-json.sh

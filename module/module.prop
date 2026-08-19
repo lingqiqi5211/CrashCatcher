@@ -4,4 +4,5 @@ version=0.1.0
 versionCode=1
 author=lingqiqi5211
 description=[ ⏳ 未启动 ] 记录应用崩溃、ANR 与原生崩溃
-support=true
+support=https://github.com/lingqiqi5211/CrashCatcher
+updateJson=https://raw.githubusercontent.com/lingqiqi5211/CrashCatcher/main/update.json

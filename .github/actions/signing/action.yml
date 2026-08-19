@@ -1,0 +1,62 @@
+name: Restore the signing key
+description: >
+  Writes the release keystore and keystore.properties, and reports its certificate
+  fingerprint — the value the module pins.
+
+inputs:
+  keystore-base64:
+    description: Base64 of the .jks
+    required: true
+  keystore-password:
+    description: Store password
+    required: true
+  key-alias:
+    description: Key alias
+    required: true
+  key-password:
+    description: Key password
+    required: true
+
+outputs:
+  pin:
+    description: SHA-256 of the signing certificate, lowercase and without colons
+    value: ${{ steps.restore.outputs.pin }}
+
+runs:
+  using: composite
+  steps:
+    # Shared by the APK and module jobs. Both need the same key for the same reason: the
+    # daemon authenticates the manager by this certificate, so a debug-signed build cannot
+    # talk to it and a module pinning a different certificate cannot either.
+    - id: restore
+      shell: bash
+      env:
+        KEYSTORE_BASE64: ${{ inputs.keystore-base64 }}
+        KEYSTORE_PASSWORD: ${{ inputs.keystore-password }}
+        KEY_ALIAS: ${{ inputs.key-alias }}
+        KEY_PASSWORD: ${{ inputs.key-password }}
+      run: |
+        if [ -z "$KEYSTORE_BASE64" ]; then
+          echo "::error::KEYSTORE_BASE64 is not set — the daemon only trusts the pinned certificate."
+          exit 1
+        fi
+        keystore="$RUNNER_TEMP/release.jks"
+        printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$keystore"
+
+        # Written where a local build looks for it, so both paths sign through the same file.
+        cat > apps/manager/keystore.properties <<PROPERTIES
+        storeFile=$keystore
+        storePassword=$KEYSTORE_PASSWORD
+        keyAlias=$KEY_ALIAS
+        keyPassword=$KEY_PASSWORD
+        PROPERTIES
+
+        # Taken from the keystore rather than copied into the repository: it is derived from
+        # the one thing that decides it, so it cannot go stale when the key is rotated.
+        pin=$(keytool -list -v -keystore "$keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" \
+          | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-Z' 'a-z')
+        if [ "${#pin}" -ne 64 ]; then
+          echo "::error::could not read the certificate fingerprint from the keystore"
+          exit 1
+        fi
+        echo "pin=$pin" >> "$GITHUB_OUTPUT"

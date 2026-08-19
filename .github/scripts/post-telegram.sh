@@ -26,6 +26,15 @@ fi
 
 escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
+# What to call this build. A tag is its own name; anything else is the version plus the commit
+# count and short hash, which is what the module reports in the root manager — so a message in
+# the channel and a line in the module list can be matched up.
+if [ "${IS_TAG:-false}" = "true" ]; then
+  label="${GITHUB_REF_NAME:-$SUFFIX}"
+else
+  label="$(sed -n 's/^version=//p' version.properties)-r$(git rev-list --count HEAD)-g$(git rev-parse --short=7 HEAD)"
+fi
+
 # What to summarise: a tag compares against the previous tag, a push against what it replaced.
 # `before` is all zeroes for a new branch and can point at a commit that no longer exists, so
 # both cases fall back to the tip commit alone rather than failing the build over a changelog.
@@ -47,7 +56,7 @@ else
 fi
 
 caption=$(
-  printf '<b>CrashCatcher %s</b>\n\n' "$(printf '%s' "$SUFFIX" | escape)"
+  printf '<b>CrashCatcher %s</b>\n\n' "$(printf '%s' "$label" | escape)"
   printf '%s\n\n' "$(printf '%s' "$log" | escape)"
   printf '<a href="%s">%s</a>' "$compare" "$([ "${IS_TAG:-false}" = "true" ] && echo '更新日志' || echo '本次改动')"
 )
