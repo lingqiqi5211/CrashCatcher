@@ -69,6 +69,10 @@ logd / DropBox / tombstone / ANR 文件
 
 **`packages.xml` 从 Android 12 起是 ABX（二进制 XML）**，`read_to_string` 直接 "stream did not contain valid UTF-8"，守护进程会起不来并被 service.sh 反复重启。包信息一律走 `cmd package list packages -f`。
 
+**守护进程由 service.sh 拉起，比 system_server 早**——那时 `cmd package` 全部失败，索引只有 uid、没有 APK 路径也没有系统标记，**每个应用都会被当成第三方**。所以「是不是系统应用」直接问 `cmd package list packages -s`（那就是 `FLAG_SYSTEM`，而不是猜分区前缀——`/system_ext` 正是漏掉后让「记录系统应用」看起来失灵的那个），并在启动后重试补全（`complete_package_index`）。鉴权失败触发的重载可能又落在 PM 不可用的时刻，所以替换索引要经 `install_packages`，让新索引继承已知的系统标记，否则分类会退回开机早期的状态直到下次重启。
+
+**存储 schema 只升不降**：库升到 v2 后，旧版本守护进程读到 `user_version` 更大会返回 `SchemaTooNew` 并拒绝启动，表现为 service.sh 反复重启。回滚模块要先删 `store/crashes.db`。
+
 **包索引要能在鉴权失败时重载一次**（`authenticate_uid`，`PACKAGE_RELOAD_INTERVAL_MS` 限频）。索引在启动时建好，而管理器重装/更新会把 APK 挪到 `/data/app` 下新的随机目录，长跑的守护进程会一直拒绝真正的管理器、界面上表现为「未连接」——每次更新管理器都会遇到，不能指望重启。限频是防任何 app 靠反复连接让守护进程枚举全部包。
 
 **保留策略只删正文与明细行，不动 `occurrence`**：聚合值在写入时维护、读取时不算。分组页因此要说明「另有 N 次已超出保留上限」，否则两个数字看起来自相矛盾。
