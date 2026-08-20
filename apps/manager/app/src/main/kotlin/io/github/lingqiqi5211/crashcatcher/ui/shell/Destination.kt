@@ -88,5 +88,8 @@ internal sealed interface Page {
 
     data object StorageSettings : Page
 
+    /** Reachable when the daemon is not: everything on it reads rather than writes. */
+    data object Diagnostics : Page
+
     data object About : Page
 }

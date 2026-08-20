@@ -35,7 +35,7 @@ object DaemonConstants {
      * Bumped whenever either side needs the other updated with it — see the Rust constant for
      * why an additive request still counts, and what each version added.
      */
-    const val PROTOCOL_VERSION = 2
+    const val PROTOCOL_VERSION = 3
 
     val DEFAULT_REQUEST_TIMEOUT = 5.seconds
 }

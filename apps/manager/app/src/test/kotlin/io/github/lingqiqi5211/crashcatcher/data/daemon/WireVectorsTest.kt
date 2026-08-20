@@ -254,7 +254,11 @@ class WireVectorsTest {
               "collectors":[{"source":"events","enabled":true,"ever_received":true,"last_received_ms":9}],
               "bridge_connected":true,
               "dialog_takeover":{"requested":false,"effective":false,"anr_show_background_conflict":false},
-              "storage":{"group_count":2,"record_count":5,"payload_bytes":100,"database_bytes":200,"evicted_payload_count":0}
+              "storage":{"group_count":2,"record_count":5,"payload_bytes":100,"database_bytes":200,"evicted_payload_count":0},
+              "runtime":{"pid":2726,"abi":"aarch64","android_sdk":37,"selinux":"enforcing",
+                "store_schema_version":2,"debug_logging":false,"active_mutes":1,
+                "package_index":{"package_count":656,"system_flags_known":true},
+                "bridge":{"connected":true,"version":"1","android_sdk":37}}
             }}}
             """.trimIndent(),
         ).result() as WireResponse.ModuleStatusResponse
@@ -264,6 +268,12 @@ class WireVectorsTest {
         assertEquals(CollectorSource.Events, status.status.collectors[0].source)
         assertTrue(status.status.collectors[0].everReceived)
         assertEquals(5L, status.status.storage.recordCount)
+        // The diagnostics facts nest the same way, and each is a separate object rather than
+        // fields flattened next to the status's own.
+        assertEquals(2726, status.status.runtime.pid)
+        assertEquals(656, status.status.runtime.packageIndex.packageCount)
+        assertTrue(status.status.runtime.packageIndex.systemFlagsKnown)
+        assertEquals(37, status.status.runtime.bridge.androidSdk)
     }
 
     @Test

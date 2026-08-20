@@ -18,6 +18,7 @@ import io.github.lingqiqi5211.crashcatcher.ui.crashes.CrashesViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.crashes.GroupDetailViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.crashes.RecordDetailViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.home.HomeViewModel
+import io.github.lingqiqi5211.crashcatcher.ui.settings.DiagnosticsViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -94,6 +95,10 @@ internal class AppViewModelFactory(
             config = container.config,
             moduleStatus = container.moduleStatus,
             crashes = container.crashes,
+        )
+
+        DiagnosticsViewModel::class.java -> DiagnosticsViewModel(
+            config = container.config,
         )
 
         else -> error("no factory for ${modelClass.name}")

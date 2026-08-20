@@ -46,6 +46,7 @@ data class GlobalConfigPatch(
     val onlyMainProcess: Boolean? = null,
     val includeSystemApps: Boolean? = null,
     val takeoverSystemDialog: Boolean? = null,
+    val debugLogging: Boolean? = null,
     val retention: RetentionPatch = RetentionPatch(),
 )
 
@@ -259,6 +260,16 @@ sealed class WireRequest {
     @Serializable
     @SerialName("set_dialog_takeover")
     data class SetDialogTakeover(val enabled: Boolean) : WireRequest()
+
+    /**
+     * The tail of the daemon's own logs.
+     *
+     * Separate from the status, which is polled to draw a screen: this can be hundreds of
+     * kilobytes and nobody wants it until they go looking. `0` takes the daemon's default.
+     */
+    @Serializable
+    @SerialName("read_runtime_log")
+    data class ReadRuntimeLog(val maxBytes: Long = 0) : WireRequest()
 }
 
 /**
@@ -354,6 +365,16 @@ sealed class WireResponse {
     @Serializable
     @SerialName("dialog_takeover")
     data class DialogTakeover(val result: DialogTakeoverResult) : WireResponse()
+
+    @Serializable
+    @SerialName("runtime_log")
+    data class RuntimeLog(
+        val text: String,
+        /** Whether anything was cut from the front to fit. */
+        val truncated: Boolean,
+        /** What the logs weigh on disk, so a reader can see the tail is a tail. */
+        val totalBytes: Long,
+    ) : WireResponse()
 }
 
 @Serializable

@@ -154,7 +154,23 @@ interface ConfigRepository {
     suspend fun setDialogTakeover(enabled: Boolean): Result<DialogTakeoverOutcome>
 
     suspend fun mute(packageName: String, scope: MuteScope): Result<Unit>
+
+    /**
+     * The tail of the daemon's own logs.
+     *
+     * On the config repository because it is read for the same reason the settings are — someone
+     * is working out why the module is not behaving — and it is the one answer that stays useful
+     * when the rest of the app is showing errors.
+     */
+    suspend fun runtimeLog(maxBytes: Long = 0): Result<RuntimeLogSnapshot>
 }
+
+data class RuntimeLogSnapshot(
+    val text: String,
+    /** Something was cut from the front; what is shown is the end. */
+    val truncated: Boolean,
+    val totalBytes: Long,
+)
 
 data class GlobalConfigUpdate(val config: GlobalConfig, val adjusted: Boolean)
 

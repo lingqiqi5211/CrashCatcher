@@ -12,6 +12,7 @@ import io.github.lingqiqi5211.crashcatcher.domain.repository.DeleteOutcome
 import io.github.lingqiqi5211.crashcatcher.domain.repository.DialogTakeoverOutcome
 import io.github.lingqiqi5211.crashcatcher.domain.repository.GlobalConfigUpdate
 import io.github.lingqiqi5211.crashcatcher.domain.repository.ModuleStatusRepository
+import io.github.lingqiqi5211.crashcatcher.domain.repository.RuntimeLogSnapshot
 import io.github.lingqiqi5211.crashcatcher.domain.repository.PayloadChunkResult
 import io.github.lingqiqi5211.crashcatcher.domain.repository.StatsRepository
 import java.io.FileInputStream
@@ -327,6 +328,16 @@ class DaemonConfigRepository(
     override suspend fun mute(packageName: String, scope: MuteScope) = client
         .ask(WireRequest.MuteApp(packageName, scope)) { response ->
             if (response !is WireResponse.Muted) unexpected(response)
+        }
+
+    override suspend fun runtimeLog(maxBytes: Long) = client
+        .ask(WireRequest.ReadRuntimeLog(maxBytes)) { response ->
+            val log = response as? WireResponse.RuntimeLog ?: unexpected(response)
+            RuntimeLogSnapshot(
+                text = log.text,
+                truncated = log.truncated,
+                totalBytes = log.totalBytes,
+            )
         }
 }
 

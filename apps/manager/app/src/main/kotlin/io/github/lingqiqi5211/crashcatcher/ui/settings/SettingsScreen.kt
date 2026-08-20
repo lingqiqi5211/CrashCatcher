@@ -47,6 +47,14 @@ internal fun SettingsScreenContent(
             onClick = actions.onReconnect,
             modifier = Modifier.testTag("crashcatcher.settings.reconnect"),
         )
+        // In 通用 with 重连守护进程 for the same reason: this is the group that has to be
+        // reachable when the daemon is the thing that is broken.
+        SettingsNavigationRow(
+            title = stringResource(R.string.settings_section_diagnostics),
+            description = stringResource(R.string.settings_diagnostics_summary),
+            onClick = actions.onOpenDiagnostics,
+            modifier = Modifier.testTag("crashcatcher.settings.diagnostics"),
+        )
         SettingsNavigationRow(
             title = stringResource(R.string.settings_section_about),
             description = stringResource(R.string.settings_about_summary),
@@ -105,6 +113,7 @@ internal data class SettingsActions(
     val onOnlyForegroundChange: (Boolean) -> Unit,
     val onOnlyMainProcessChange: (Boolean) -> Unit,
     val onIncludeSystemAppsChange: (Boolean) -> Unit,
+    val onDebugLoggingChange: (Boolean) -> Unit,
     val onDialogTakeoverChange: (Boolean) -> Unit,
     val onRetentionDaysChange: (Int) -> Unit,
     val onMaxRecordsTotalChange: (Int) -> Unit,
@@ -116,6 +125,7 @@ internal data class SettingsActions(
     val onOpenNotify: () -> Unit,
     val onOpenDialog: () -> Unit,
     val onOpenStorage: () -> Unit,
+    val onOpenDiagnostics: () -> Unit,
 )
 
 /** Offered values, all inside the daemon's clamp range so nothing is silently corrected. */

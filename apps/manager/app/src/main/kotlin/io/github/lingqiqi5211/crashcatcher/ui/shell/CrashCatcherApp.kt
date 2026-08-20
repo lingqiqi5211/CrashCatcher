@@ -73,6 +73,9 @@ import io.github.lingqiqi5211.crashcatcher.ui.settings.AboutPage
 import io.github.lingqiqi5211.crashcatcher.ui.settings.AppearanceScreen
 import io.github.lingqiqi5211.crashcatcher.ui.settings.CaptureSettingsPage
 import io.github.lingqiqi5211.crashcatcher.ui.settings.DialogSettingsPage
+import io.github.lingqiqi5211.crashcatcher.ui.settings.DiagnosticsActions
+import io.github.lingqiqi5211.crashcatcher.ui.settings.DiagnosticsPage
+import io.github.lingqiqi5211.crashcatcher.ui.settings.DiagnosticsViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.settings.NotifySettingsPage
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsActions
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsScreenContent
@@ -192,6 +195,35 @@ internal fun CrashCatcherApp(
 
             is Page.StorageSettings -> SettingsSubPage(factory) { state, actions ->
                 StorageSettingsPage(state = state, actions = actions, onBack = pop)
+            }
+
+            is Page.Diagnostics -> {
+                val context = LocalContext.current
+                val logViewModel: DiagnosticsViewModel = viewModel(factory = factory)
+                val log by logViewModel.uiState.collectAsStateWithLifecycle()
+                // Read once on arrival: this is a pull, not a subscription — the log is only
+                // interesting at the moment someone comes looking at it.
+                LaunchedEffect(Unit) { logViewModel.refresh() }
+                val reportLabel = stringResource(R.string.diagnostics_report_label)
+
+                SettingsSubPage(factory) { state, actions ->
+                    DiagnosticsPage(
+                        state = state,
+                        log = log,
+                        device = remember { readDeviceInfo() },
+                        actions = DiagnosticsActions(
+                            onDebugLoggingChange = actions.onDebugLoggingChange,
+                            onRefreshLog = logViewModel::refresh,
+                            onCopyReport = { report ->
+                                copyLog(context, reportLabel, report)
+                            },
+                            onShareReport = { report ->
+                                shareLog(context, reportLabel, report)
+                            },
+                        ),
+                        onBack = pop,
+                    )
+                }
             }
 
             is Page.About -> {
@@ -448,6 +480,7 @@ private fun SettingsViewModel.settingsActions(
     onOnlyForegroundChange = ::onOnlyForegroundChange,
     onOnlyMainProcessChange = ::onOnlyMainProcessChange,
     onIncludeSystemAppsChange = ::onIncludeSystemAppsChange,
+    onDebugLoggingChange = ::onDebugLoggingChange,
     onDialogTakeoverChange = ::onDialogTakeoverChange,
     onRetentionDaysChange = ::onRetentionDaysChange,
     onMaxRecordsTotalChange = ::onMaxRecordsTotalChange,
@@ -459,6 +492,7 @@ private fun SettingsViewModel.settingsActions(
     onOpenNotify = { onPush?.invoke(Page.NotifySettings) },
     onOpenDialog = { onPush?.invoke(Page.DialogSettings) },
     onOpenStorage = { onPush?.invoke(Page.StorageSettings) },
+    onOpenDiagnostics = { onPush?.invoke(Page.Diagnostics) },
 )
 
 private fun CrashesViewModel.actions(onOpenGroup: (GroupSummary) -> Unit) = CrashesActions(
@@ -709,6 +743,7 @@ private fun Page.toRoute(): String = when (this) {
     is Page.NotifySettings -> "settings/notify"
     is Page.DialogSettings -> "settings/dialog"
     is Page.StorageSettings -> "settings/storage"
+    is Page.Diagnostics -> "settings/diagnostics"
     is Page.About -> "about"
 }
 
@@ -719,6 +754,7 @@ private fun String.toPage(): Page? = when {
     this == "settings/notify" -> Page.NotifySettings
     this == "settings/dialog" -> Page.DialogSettings
     this == "settings/storage" -> Page.StorageSettings
+    this == "settings/diagnostics" -> Page.Diagnostics
     this == "about" -> Page.About
     startsWith("group/") -> Page.GroupDetail(removePrefix("group/"))
     startsWith("record/") -> Page.RecordDetail(RecordId(removePrefix("record/")))

@@ -346,6 +346,50 @@ data class ModuleStatus(
     val bridgeConnected: Boolean,
     val dialogTakeover: DialogTakeoverStatus,
     val storage: StorageStatus = StorageStatus(),
+    val runtime: RuntimeFacts,
+)
+
+/**
+ * What the daemon can say about its own health.
+ *
+ * Read as a whole on the diagnostics page: a collector that never fired, a bridge that never
+ * connected and a package index that never completed all present as "it is not recording", and
+ * are told apart only by seeing all three together.
+ */
+@Serializable
+data class RuntimeFacts(
+    val pid: Int,
+    /** The ABI this daemon was built for, not necessarily the device's preferred one. */
+    val abi: String,
+    val androidSdk: Int,
+    /** `enforcing`, `permissive`, or `unknown`. */
+    val selinux: String,
+    val storeSchemaVersion: Long,
+    val debugLogging: Boolean,
+    val packageIndex: PackageIndexFacts,
+    val bridge: BridgeFacts,
+    /** Apps silenced right now — the first thing to check when notifications stopped. */
+    val activeMutes: Int,
+)
+
+@Serializable
+data class PackageIndexFacts(
+    val packageCount: Int,
+    /**
+     * Whether the system-app flags came from PackageManager.
+     *
+     * False means the index predates it answering, and while it holds every app looks
+     * third-party — which is what makes "record system apps" appear to do nothing.
+     */
+    val systemFlagsKnown: Boolean,
+)
+
+@Serializable
+data class BridgeFacts(
+    val connected: Boolean,
+    /** From the bridge's own hello, so a mismatch with the daemon means a stale dex. */
+    val version: String? = null,
+    val androidSdk: Int? = null,
 )
 
 @Serializable
@@ -372,6 +416,8 @@ data class GlobalConfig(
     val onlyMainProcess: Boolean,
     val includeSystemApps: Boolean,
     val takeoverSystemDialog: Boolean,
+    /** Log at debug level. Meant to be on only while reproducing something. */
+    val debugLogging: Boolean = false,
     val retention: RetentionPolicy,
 )
 

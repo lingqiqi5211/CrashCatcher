@@ -41,6 +41,9 @@ internal data class SettingsUiState(
     val error: DomainError? = null,
 ) {
     val value: GlobalConfig? get() = config.valueOrNull
+
+    /** The status where one was read, for pages that treat "unreachable" as a finding. */
+    val moduleStatus: ModuleStatus? get() = moduleStatusState.valueOrNull
 }
 
 internal class SettingsViewModel(
@@ -88,6 +91,9 @@ internal class SettingsViewModel(
 
     fun onIncludeSystemAppsChange(enabled: Boolean) =
         patch(GlobalConfigPatch(includeSystemApps = enabled))
+
+    fun onDebugLoggingChange(enabled: Boolean) =
+        patch(GlobalConfigPatch(debugLogging = enabled))
 
     fun onOnlyMainProcessChange(enabled: Boolean) =
         patch(GlobalConfigPatch(onlyMainProcess = enabled))
