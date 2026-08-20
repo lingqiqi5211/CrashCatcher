@@ -26,7 +26,7 @@ pub const MAX_LOG_PAYLOAD_BYTES: usize = 1024 * 1024;
 pub enum ParseError {
     #[error("input ended while reading {field}")]
     Truncated { field: &'static str },
-    #[error("{field} length {length} exceeds the remaining {remaining} bytes")]
+    #[error("{field} claims {length} bytes but {remaining} remain")]
     LengthOutOfBounds {
         field: &'static str,
         length: usize,

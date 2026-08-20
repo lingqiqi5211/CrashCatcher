@@ -95,8 +95,30 @@ impl AndroidLogReader {
         if length > self.buffer.bytes.len() {
             return Err(LogReaderError::Length);
         }
-        parse_logger_entry(&self.buffer.bytes[..length]).map_err(LogReaderError::Parse)
+        parse_logger_entry(&self.buffer.bytes[..length]).map_err(|source| LogReaderError::Entry {
+            source,
+            length,
+            head: hex_prefix(&self.buffer.bytes[..length]),
+        })
     }
+}
+
+/// The first bytes of an entry, hex, for a parse failure to carry.
+///
+/// A message saying the header disagrees with the payload length is not enough to act on: what
+/// is needed is what the bytes actually were. Every entry failing to parse means this reader's
+/// idea of the platform's layout is wrong on that device, and no amount of re-reading the code
+/// settles which field moved.
+fn hex_prefix(bytes: &[u8]) -> String {
+    const PREFIX_BYTES: usize = 32;
+    let mut out = String::with_capacity(PREFIX_BYTES * 3);
+    for byte in bytes.iter().take(PREFIX_BYTES) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 impl Drop for AndroidLogReader {
@@ -118,6 +140,16 @@ pub enum LogReaderError {
     Read(#[source] io::Error),
     #[error("liblog returned an invalid entry length")]
     Length,
-    #[error("invalid logger entry: {0}")]
-    Parse(#[from] ParseError),
+    /// A parse failure with the bytes that caused it.
+    ///
+    /// The bytes are the point. This reader mirrors a platform struct, and where a device lays
+    /// it out differently every entry fails identically — the message alone cannot say which
+    /// field moved, and the buffer is gone by the time anyone asks.
+    #[error("invalid logger entry ({length} bytes): {source} [{head}]")]
+    Entry {
+        #[source]
+        source: ParseError,
+        length: usize,
+        head: String,
+    },
 }
