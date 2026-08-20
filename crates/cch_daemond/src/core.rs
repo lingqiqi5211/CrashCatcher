@@ -348,6 +348,14 @@ impl DaemonCore {
         }
     }
 
+    pub fn clear_collector_error(&self, source: CollectorSource) {
+        if let Ok(mut collectors) = self.collectors.lock()
+            && let Some(health) = collectors.get_mut(&collector_key(source))
+        {
+            health.detail = None;
+        }
+    }
+
     pub fn was_source_ingested(&self, key: &str) -> Result<bool, WireError> {
         self.store
             .was_ingested(key)
@@ -1601,6 +1609,30 @@ mod tests {
             cch_store::SCHEMA_VERSION
         );
         assert!(!status.runtime.debug_logging);
+    }
+
+    #[test]
+    fn a_recovered_collector_clears_only_its_error() {
+        let (_directory, core) = test_core();
+        core.mark_collector_error(CollectorSource::Events, "stream closed");
+        core.mark_collector_error(CollectorSource::CrashBuffer, "stream closed");
+
+        core.clear_collector_error(CollectorSource::Events);
+
+        let status = core.module_status().expect("module status");
+        let events = status
+            .collectors
+            .iter()
+            .find(|health| health.source == CollectorSource::Events)
+            .expect("events health");
+        let crash = status
+            .collectors
+            .iter()
+            .find(|health| health.source == CollectorSource::CrashBuffer)
+            .expect("crash health");
+        assert_eq!(events.detail, None);
+        assert_eq!(crash.detail.as_deref(), Some("stream closed"));
+        assert!(!events.ever_received);
     }
 
     /// Per-app settings have to work for a platform process too — it is the thing most worth

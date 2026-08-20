@@ -88,6 +88,12 @@ impl AndroidLogReader {
                 self.buffer.bytes.as_mut_ptr().cast::<c_void>(),
             )
         };
+        // Blocking liblog readers return zero when logd closes their socket. It is
+        // an EOF, not a zero-byte logger entry; the opaque list must be replaced
+        // before another read can connect again.
+        if length == 0 {
+            return Err(LogReaderError::EndOfStream);
+        }
         if length < 0 {
             return Err(LogReaderError::Read(io::Error::from_raw_os_error(-length)));
         }
@@ -138,6 +144,8 @@ pub enum LogReaderError {
     Open(#[source] io::Error),
     #[error("failed to read Android log buffer: {0}")]
     Read(#[source] io::Error),
+    #[error("Android log stream closed unexpectedly")]
+    EndOfStream,
     #[error("liblog returned an invalid entry length")]
     Length,
     /// A parse failure with the bytes that caused it.
@@ -152,4 +160,11 @@ pub enum LogReaderError {
         length: usize,
         head: String,
     },
+}
+
+impl LogReaderError {
+    #[must_use]
+    pub const fn requires_reconnect(&self) -> bool {
+        matches!(self, Self::Read(_) | Self::EndOfStream)
+    }
 }

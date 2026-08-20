@@ -14,6 +14,8 @@ use cch_anrfile::parse_anr;
 use cch_dropbox::{DropboxEntry, DropboxKind, parse_path as parse_dropbox};
 #[cfg(any(target_os = "android", test))]
 use cch_logd::ActivityEvent;
+#[cfg(target_os = "android")]
+use cch_logd::{AndroidLogReader, LogBuffer, LoggerEntry};
 use cch_logd::{CrashBufferReport, parse_crash_buffer};
 use cch_merge::{CrashFragment, CrashMerger, EvidenceQuality, FragmentPayload};
 use cch_model::{CrashKind, SourceMask};
@@ -28,6 +30,8 @@ use crate::{DaemonCore, now_ms};
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MERGE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(target_os = "android")]
+const LOG_READER_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct CollectorRuntime {
@@ -471,6 +475,51 @@ impl IngestedRegistry for CoreRegistry {
 }
 
 #[cfg(target_os = "android")]
+fn run_log_reader(
+    core: &DaemonCore,
+    stop: &AtomicBool,
+    source: CollectorSource,
+    buffer: LogBuffer,
+    mut handle_entry: impl for<'entry> FnMut(LoggerEntry<'entry>) -> bool,
+) {
+    while !stop.load(Ordering::Acquire) {
+        let mut reader = match AndroidLogReader::open(buffer) {
+            Ok(reader) => {
+                core.clear_collector_error(source);
+                reader
+            }
+            Err(error) => {
+                core.mark_collector_error(source, error.to_string());
+                thread::sleep(LOG_READER_RETRY_INTERVAL);
+                continue;
+            }
+        };
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            match reader.read_entry() {
+                Ok(entry) => {
+                    core.clear_collector_error(source);
+                    if !handle_entry(entry) {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let reconnect = error.requires_reconnect();
+                    core.mark_collector_error(source, error.to_string());
+                    if reconnect {
+                        break;
+                    }
+                    thread::sleep(LOG_READER_RETRY_INTERVAL);
+                }
+            }
+        }
+        thread::sleep(LOG_READER_RETRY_INTERVAL);
+    }
+}
+
+#[cfg(target_os = "android")]
 fn spawn_events_loop(
     core: Arc<DaemonCore>,
     stop: Arc<AtomicBool>,
@@ -479,56 +528,39 @@ fn spawn_events_loop(
     thread::Builder::new()
         .name("ct-log-events".to_owned())
         .spawn(move || {
-            use cch_logd::{
-                AndroidLogReader, LogBuffer, parse_activity_event, parse_event_payload,
-                parse_screen_event,
-            };
-            let mut reader = match AndroidLogReader::open(LogBuffer::Events) {
-                Ok(reader) => reader,
-                Err(error) => {
-                    core.mark_collector_error(CollectorSource::Events, error.to_string());
-                    return;
-                }
-            };
-            while !stop.load(Ordering::Acquire) {
-                match reader.read_entry() {
-                    Ok(entry) => {
-                        let at_ms = i64::from(entry.seconds) * 1_000
-                            + i64::from(entry.nanoseconds / 1_000_000);
-                        let Ok(record) = parse_event_payload(entry.payload) else {
-                            continue;
-                        };
-                        // This buffer is also the only place the daemon can see the screen
-                        // being unlocked, which is what `MuteScope::UntilUnlock` expires on.
-                        if let Some(screen) = parse_screen_event(&record) {
-                            match core.clear_unlock_mutes() {
-                                Ok(cleared) if cleared > 0 => {
-                                    tracing::info!(
-                                        ?screen,
-                                        cleared,
-                                        "released the until-unlock mutes"
-                                    );
-                                }
-                                Ok(_) => {}
-                                Err(error) => {
-                                    warn!(%error, "could not clear the until-unlock mutes");
-                                }
+            use cch_logd::{parse_activity_event, parse_event_payload, parse_screen_event};
+            run_log_reader(
+                &core,
+                &stop,
+                CollectorSource::Events,
+                LogBuffer::Events,
+                |entry| {
+                    let at_ms =
+                        i64::from(entry.seconds) * 1_000 + i64::from(entry.nanoseconds / 1_000_000);
+                    let Ok(record) = parse_event_payload(entry.payload) else {
+                        return true;
+                    };
+                    // This buffer is also the only place the daemon can see the screen
+                    // being unlocked, which is what `MuteScope::UntilUnlock` expires on.
+                    if let Some(screen) = parse_screen_event(&record) {
+                        match core.clear_unlock_mutes() {
+                            Ok(cleared) if cleared > 0 => {
+                                tracing::info!(?screen, cleared, "released the until-unlock mutes");
                             }
-                            continue;
-                        }
-                        if let Ok(event) = parse_activity_event(record) {
-                            let fragment = fragment_from_activity(event, at_ms);
-                            if sender.send(fragment).is_err() {
-                                break;
+                            Ok(_) => {}
+                            Err(error) => {
+                                warn!(%error, "could not clear the until-unlock mutes");
                             }
                         }
+                        return true;
                     }
-                    Err(error) => {
-                        core.mark_collector_error(CollectorSource::Events, error.to_string());
-                        thread::sleep(Duration::from_millis(250));
+                    if let Ok(event) = parse_activity_event(record) {
+                        let fragment = fragment_from_activity(event, at_ms);
+                        return sender.send(fragment).is_ok();
                     }
-                }
-            }
+                    true
+                },
+            );
         })
         .unwrap_or_else(|error| {
             warn!(%error, "failed to start events reader");
@@ -545,40 +577,27 @@ fn spawn_crash_loop(
     thread::Builder::new()
         .name("ct-log-crash".to_owned())
         .spawn(move || {
-            use cch_logd::{AndroidLogReader, LogBuffer, TextLogEntry};
-            let mut reader = match AndroidLogReader::open(LogBuffer::Crash) {
-                Ok(reader) => reader,
-                Err(error) => {
-                    core.mark_collector_error(CollectorSource::CrashBuffer, error.to_string());
-                    return;
-                }
-            };
-            while !stop.load(Ordering::Acquire) {
-                match reader.read_entry() {
-                    Ok(entry) => {
-                        let Ok(text) = TextLogEntry::parse(entry.payload) else {
-                            continue;
-                        };
-                        if text.tag != "AndroidRuntime"
-                            || !text.message.contains("FATAL EXCEPTION:")
-                        {
-                            continue;
-                        }
-                        let Ok(report) = parse_crash_buffer(text.message) else {
-                            continue;
-                        };
-                        let at_ms = i64::from(entry.seconds) * 1_000
-                            + i64::from(entry.nanoseconds / 1_000_000);
-                        if sender.send(fragment_from_crash(report, at_ms)).is_err() {
-                            break;
-                        }
+            use cch_logd::TextLogEntry;
+            run_log_reader(
+                &core,
+                &stop,
+                CollectorSource::CrashBuffer,
+                LogBuffer::Crash,
+                |entry| {
+                    let Ok(text) = TextLogEntry::parse(entry.payload) else {
+                        return true;
+                    };
+                    if text.tag != "AndroidRuntime" || !text.message.contains("FATAL EXCEPTION:") {
+                        return true;
                     }
-                    Err(error) => {
-                        core.mark_collector_error(CollectorSource::CrashBuffer, error.to_string());
-                        thread::sleep(Duration::from_millis(250));
-                    }
-                }
-            }
+                    let Ok(report) = parse_crash_buffer(text.message) else {
+                        return true;
+                    };
+                    let at_ms =
+                        i64::from(entry.seconds) * 1_000 + i64::from(entry.nanoseconds / 1_000_000);
+                    sender.send(fragment_from_crash(report, at_ms)).is_ok()
+                },
+            );
         })
         .unwrap_or_else(|error| {
             warn!(%error, "failed to start crash reader");
