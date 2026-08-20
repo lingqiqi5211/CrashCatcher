@@ -18,11 +18,26 @@ if (-not (Test-Path $vcvars)) {
 }
 
 # Import the environment vcvars sets (PATH, LIB, INCLUDE) into this session.
+# Some launchers leave both `PATH` and `Path` in the native environment. `cmd set`
+# prints both, and importing the shorter stale value last would silently remove MSVC.
+$vcvarsPath = $null
 cmd /c "call `"$vcvars`" >NUL 2>&1 && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') {
-        Set-Item -Path "env:$($Matches[1])" -Value $Matches[2]
+        $name = $Matches[1]
+        $value = $Matches[2]
+        if ($name -ieq 'PATH') {
+            if ($null -eq $vcvarsPath -or $value.Length -gt $vcvarsPath.Length) {
+                $vcvarsPath = $value
+            }
+        } else {
+            Set-Item -Path "env:$name" -Value $value
+        }
     }
 }
+if ($null -eq $vcvarsPath) {
+    throw 'vcvars64.bat did not return PATH'
+}
+$env:Path = $vcvarsPath
 
 & cargo @args
 exit $LASTEXITCODE
