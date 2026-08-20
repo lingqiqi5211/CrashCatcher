@@ -157,7 +157,11 @@ pub fn is_completion_event(kind: WatchKind, name: &str, mask: u32) -> bool {
         return false;
     }
     match kind {
-        WatchKind::Tombstone => mask & (IN_CREATE_MASK | IN_MOVED_TO_MASK) != 0,
+        // Tombstoned creates or truncates a numbered slot before writing its header. Treating
+        // IN_CREATE as completion reads an empty prefix, reports a missing process header, and
+        // never retries because the later close was not watched. Reused slots do not emit create
+        // at all, so close-write is the only reliable completion signal for both cases.
+        WatchKind::Tombstone => mask & (IN_CLOSE_WRITE_MASK | IN_MOVED_TO_MASK) != 0,
         WatchKind::Dropbox => mask & IN_MOVED_TO_MASK != 0,
         WatchKind::Anr => mask & (IN_CLOSE_WRITE_MASK | IN_MOVED_TO_MASK) != 0,
     }
@@ -256,7 +260,7 @@ mod live {
             let path = CString::new(root.path.as_os_str().as_bytes())
                 .map_err(|_| WatcherError::InvalidName(root.path.clone()))?;
             let mask = match root.kind {
-                WatchKind::Tombstone => IN_CREATE_MASK | IN_MOVED_TO_MASK | IN_DELETE_MASK,
+                WatchKind::Tombstone => IN_CLOSE_WRITE_MASK | IN_MOVED_TO_MASK | IN_DELETE_MASK,
                 WatchKind::Dropbox => IN_MOVED_TO_MASK,
                 WatchKind::Anr => IN_CLOSE_WRITE_MASK | IN_MOVED_TO_MASK,
             }; // SAFETY: fd and NUL path are valid for the call and no pointer is retained.
@@ -336,10 +340,20 @@ mod tests {
     use std::fs::File;
     #[test]
     fn completion_rules() {
-        assert!(is_completion_event(
+        assert!(!is_completion_event(
             WatchKind::Tombstone,
             "tombstone_07",
             IN_CREATE_MASK
+        ));
+        assert!(is_completion_event(
+            WatchKind::Tombstone,
+            "tombstone_07",
+            IN_CLOSE_WRITE_MASK
+        ));
+        assert!(is_completion_event(
+            WatchKind::Tombstone,
+            "tombstone_07",
+            IN_MOVED_TO_MASK
         ));
         assert!(!is_completion_event(
             WatchKind::Tombstone,
