@@ -29,7 +29,7 @@ use tracing::warn;
 use crate::{DaemonCore, now_ms};
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const MERGE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const MERGE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "android")]
 const LOG_READER_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -255,7 +255,14 @@ fn dropbox_fragment(entry: DropboxEntry) -> Result<Option<CrashFragment>, String
             }
         }
         CrashKind::Anr => {
+            fragment.summary_class = Some("ANR".to_owned());
+            // The first body line is usually an ANR dump header, not the reason. Keep the
+            // ActivityManager reason when it exists and let the payload carry the dump.
+            fragment.summary_text = None;
             if let Ok(report) = parse_anr(entry.body.as_bytes()) {
+                fragment.process_name = report.process_name.clone();
+                fragment.package_name = Some(report.package_name().to_owned());
+                fragment.pid = report.pid;
                 fragment.frames = report
                     .main_thread()
                     .and_then(|thread| thread.top_frame())
@@ -291,7 +298,7 @@ fn tombstone_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String
         if report.format == TombstoneFormat::Protobuf {
             EvidenceQuality::Protobuf
         } else {
-            EvidenceQuality::Text
+            EvidenceQuality::Artifact
         },
         CrashKind::NativeCrash,
         report.process_name.clone(),
@@ -314,7 +321,7 @@ fn anr_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String> {
     let report = parse_anr(&bytes).map_err(|error| error.to_string())?;
     let mut fragment = CrashFragment::new(
         SourceMask::ANR_FILE,
-        EvidenceQuality::Text,
+        EvidenceQuality::Artifact,
         CrashKind::Anr,
         report.process_name.clone(),
         report.pid,
@@ -322,7 +329,6 @@ fn anr_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String> {
     );
     fragment.package_name = Some(report.package_name().to_owned());
     fragment.summary_class = Some("ANR".to_owned());
-    fragment.summary_text = Some("Application not responding".to_owned());
     fragment.frames = report
         .main_thread()
         .and_then(|thread| thread.top_frame())
@@ -348,6 +354,16 @@ fn apply_java_report(fragment: &mut CrashFragment, report: &CrashBufferReport) {
 }
 
 fn apply_native_report(fragment: &mut CrashFragment, report: &TombstoneReport) {
+    // OEM DropBox process/pid headers are not consistently populated. The tombstone body is the
+    // native crash authority for those fields; the DropBox uid remains authoritative when it is
+    // present, with the body uid as a fallback. A wrong header pid otherwise prevents Events,
+    // DropBox and Tombstone from joining.
+    fragment.process_name = report.process_name.clone();
+    fragment.package_name = Some(report.package_name().to_owned());
+    fragment.pid = report.pid;
+    if fragment.user_id.is_none() {
+        fragment.user_id = report.uid.map(android_user_id);
+    }
     fragment.summary_class = report.signal_name.clone().or_else(|| {
         report
             .signal_number
@@ -630,12 +646,22 @@ fn kind_of_am_crash(exception_class: &str) -> CrashKind {
 fn fragment_from_activity(event: ActivityEvent, happened_at_ms: i64) -> CrashFragment {
     match event {
         ActivityEvent::Crash(event) => {
+            let kind = kind_of_am_crash(&event.exception_class);
+            // NativeCrashListener reports through system_server's ActivityManager path on
+            // some ROMs, so this field is system_server's pid rather than the process that
+            // produced the tombstone. Mark it unknown and let the tombstone supply it; keeping
+            // the framework pid prevents the two sources from ever joining.
+            let pid = if kind == CrashKind::NativeCrash {
+                0
+            } else {
+                event.pid
+            };
             let mut fragment = CrashFragment::new(
                 SourceMask::EVENTS,
                 EvidenceQuality::Structured,
-                kind_of_am_crash(&event.exception_class),
+                kind,
                 event.process_name.clone(),
-                event.pid,
+                pid,
                 happened_at_ms,
             );
             fragment.package_name = Some(package_from_process(&event.process_name));
@@ -721,10 +747,9 @@ mod tests {
     /// "Native crash" badged "Java", and kept the tombstone from merging into it.
     #[test]
     fn an_am_crash_can_be_reporting_a_native_crash() {
-        assert_eq!(
-            am_crash("Native crash", "Aborted").kind,
-            CrashKind::NativeCrash
-        );
+        let native = am_crash("Native crash", "Aborted");
+        assert_eq!(native.kind, CrashKind::NativeCrash);
+        assert_eq!(native.pid, 0);
         assert_eq!(
             am_crash("java.lang.NullPointerException", "boom").kind,
             CrashKind::JavaException
@@ -752,5 +777,30 @@ mod tests {
         let rendered = render_tombstone(&report);
         assert!(rendered.contains("SIGSEGV"));
         assert!(rendered.contains("com.example"));
+    }
+
+    #[test]
+    fn native_body_repairs_an_unreliable_dropbox_identity() {
+        let report = parse_text(
+            b"pid: 4242, tid: 4243, name: worker  >>> com.example:native <<<\n\
+              uid: 1010123\n\
+              signal 11 (SIGSEGV), code 1 (SEGV_MAPERR)\n",
+        )
+        .expect("tombstone body");
+        let mut fragment = CrashFragment::new(
+            SourceMask::DROPBOX,
+            EvidenceQuality::Structured,
+            CrashKind::NativeCrash,
+            "wrong.process",
+            99,
+            1_000,
+        );
+
+        apply_native_report(&mut fragment, &report);
+
+        assert_eq!(fragment.process_name, "com.example:native");
+        assert_eq!(fragment.package_name.as_deref(), Some("com.example"));
+        assert_eq!(fragment.pid, 4242);
+        assert_eq!(fragment.user_id, Some(10));
     }
 }

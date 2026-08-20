@@ -1035,7 +1035,9 @@ impl DaemonCore {
             .read()
             .map_err(|_| WireError::internal("package index lock poisoned"))?;
         if let Some(package) = packages.by_name(&record.package_name) {
-            record.user_id = i32::try_from(package.user_id()).unwrap_or(i32::MAX);
+            // `packages.list` stores an appId, not the user of this occurrence. The event,
+            // tombstone or DropBox entry is the authority for the Android user; zero remains
+            // the honest fallback when none of those sources knew it.
             record.app_version_code = record.app_version_code.or(package.version_code);
         }
         if let Some(origin) = classify_package(&packages, &record.package_name) {
@@ -1067,7 +1069,11 @@ impl DaemonCore {
         match mode {
             NotifyMode::Nothing => {}
             NotifyMode::Dialog => {
-                start_alert_activity(inserted.record.id.as_str(), record.user_id);
+                start_alert_activity(
+                    inserted.record.id.as_str(),
+                    &record.package_name,
+                    record.user_id,
+                );
             }
             NotifyMode::Notification | NotifyMode::Toast => {
                 let notification = NotificationSpec {
@@ -1307,7 +1313,7 @@ fn resolve_launcher_component(package_name: &str, user_id: i32) -> Option<String
 ///
 /// Failure is deliberately only logged. The record is already stored by this point, so a
 /// missing alert costs the notification, not the crash.
-fn start_alert_activity(record_id: &str, user_id: i32) {
+fn start_alert_activity(record_id: &str, package_name: &str, user_id: i32) {
     run_am(&[
         "start",
         "--user",
@@ -1321,6 +1327,11 @@ fn start_alert_activity(record_id: &str, user_id: i32) {
         "--es",
         "record_id",
         record_id,
+        // Lets a cold Manager render the app identity before its reverse daemon channel has
+        // connected and the full record has loaded.
+        "--es",
+        "package_name",
+        package_name,
     ]);
 }
 
@@ -1543,6 +1554,17 @@ mod tests {
             .expect("stored");
         assert!(inserted.group.package_installed);
         assert!(!inserted.group.is_system_app, "not under /system");
+    }
+
+    #[test]
+    fn package_enrichment_preserves_a_secondary_user() {
+        let (_directory, core) = core_with_packages(one_app_index());
+        let mut record = record_named("com.example", "com.example");
+        record.user_id = 10;
+
+        let inserted = core.ingest(record).expect("ingest").expect("stored");
+
+        assert_eq!(inserted.group.user_id, 10);
     }
 
     /// The debug switch has to reach the running process. Persisting it and waiting for a

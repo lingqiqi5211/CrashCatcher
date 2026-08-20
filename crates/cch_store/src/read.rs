@@ -1128,6 +1128,27 @@ mod tests {
     }
 
     #[test]
+    fn package_rollups_keep_android_users_separate() {
+        let store = TestStore::new();
+        store.insert_default(&java_record(1_000)).expect("owner");
+        let mut work_profile = java_record(2_000);
+        work_profile.user_id = 10;
+        store.insert_default(&work_profile).expect("work profile");
+
+        let mut users: Vec<i32> = store
+            .store
+            .package_rollups(true, true, 0)
+            .expect("rolls up")
+            .into_iter()
+            .filter(|entry| entry.package_name == "com.example.app")
+            .map(|entry| entry.user_id)
+            .collect();
+        users.sort_unstable();
+
+        assert_eq!(users, [0, 10]);
+    }
+
+    #[test]
     fn package_rollups_respect_the_system_app_toggle() {
         let store = TestStore::new();
         let mut system = java_record(1_000);

@@ -15,6 +15,8 @@ const EVENT_TYPE_FLOAT: u8 = 4;
 const MAX_EVENT_DEPTH: usize = 16;
 const MAX_EVENT_ELEMENTS: usize = 255;
 const MAX_EVENT_STRING_BYTES: usize = 64 * 1024;
+/// Android user ids stay small even on devices with work profiles and cloned apps.
+const MAX_PLAUSIBLE_USER_ID: i32 = 999;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -193,9 +195,10 @@ fn parse_am_crash(values: &[EventValue]) -> Result<AmCrashEvent, ParseError> {
             actual: values.len(),
         });
     }
+    let (user_id, pid) = activity_user_and_pid(values)?;
     Ok(AmCrashEvent {
-        user_id: int_at(values, 0, "user_id")?,
-        pid: int_at(values, 1, "pid")?,
+        user_id,
+        pid,
         process_name: string_at(values, 2, "process_name")?,
         flags: int_at(values, 3, "flags")?,
         exception_class: string_at(values, 4, "exception_class")?,
@@ -217,13 +220,31 @@ fn parse_am_anr(values: &[EventValue]) -> Result<AmAnrEvent, ParseError> {
             actual: values.len(),
         });
     }
+    let (user_id, pid) = activity_user_and_pid(values)?;
     Ok(AmAnrEvent {
-        user_id: int_at(values, 0, "user_id")?,
-        pid: int_at(values, 1, "pid")?,
+        user_id,
+        pid,
         process_name: string_at(values, 2, "process_name")?,
         flags: int_at(values, 3, "flags")?,
         reason: string_at(values, 4, "reason")?,
     })
+}
+
+/// Reads the first two `am_crash` / `am_anr` fields across platform variants.
+///
+/// AOSP's event-log tag still declares `(User, PID)`, but some Android 16 builds emit
+/// `(PID, User)` while keeping that stale declaration. Treat the unambiguous large/small
+/// pair as swapped and retain the documented order for ambiguous values. Without this,
+/// the event fragment carries pid 0, cannot join the crash-buffer fragment, and the same
+/// crash is stored and announced twice after the full merge window.
+fn activity_user_and_pid(values: &[EventValue]) -> Result<(i32, i32), ParseError> {
+    let first = int_at(values, 0, "user_or_pid")?;
+    let second = int_at(values, 1, "pid_or_user")?;
+    if first > MAX_PLAUSIBLE_USER_ID && (0..=MAX_PLAUSIBLE_USER_ID).contains(&second) {
+        Ok((second, first))
+    } else {
+        Ok((first, second))
+    }
 }
 
 fn int_at(values: &[EventValue], index: usize, field: &'static str) -> Result<i32, ParseError> {
@@ -294,6 +315,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_pid_first_android_16_am_crash() {
+        let mut bytes = AM_CRASH_TAG.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[EVENT_TYPE_LIST, 9]);
+        int(4242, &mut bytes);
+        int(10, &mut bytes);
+        string("com.example:worker", &mut bytes);
+        int(0, &mut bytes);
+        string("java.lang.IllegalStateException", &mut bytes);
+        string("broken", &mut bytes);
+        string("Worker.kt", &mut bytes);
+        int(91, &mut bytes);
+        int(0, &mut bytes);
+
+        let parsed = parse_activity_event(parse_event_payload(&bytes).unwrap()).unwrap();
+        assert!(matches!(
+            parsed,
+            ActivityEvent::Crash(AmCrashEvent {
+                user_id: 10,
+                pid: 4242,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn parses_stable_five_field_am_anr() {
         let mut bytes = AM_ANR_TAG.to_le_bytes().to_vec();
         bytes.extend_from_slice(&[EVENT_TYPE_LIST, 5]);
@@ -305,6 +351,27 @@ mod tests {
 
         let parsed = parse_activity_event(parse_event_payload(&bytes).unwrap()).unwrap();
         assert!(matches!(parsed, ActivityEvent::Anr(event) if event.pid == 99));
+    }
+
+    #[test]
+    fn parses_pid_first_android_16_am_anr() {
+        let mut bytes = AM_ANR_TAG.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[EVENT_TYPE_LIST, 5]);
+        int(4242, &mut bytes);
+        int(10, &mut bytes);
+        string("com.example", &mut bytes);
+        int(1, &mut bytes);
+        string("Input dispatching timed out", &mut bytes);
+
+        let parsed = parse_activity_event(parse_event_payload(&bytes).unwrap()).unwrap();
+        assert!(matches!(
+            parsed,
+            ActivityEvent::Anr(AmAnrEvent {
+                user_id: 10,
+                pid: 4242,
+                ..
+            })
+        ));
     }
 
     /// The six-field shape as logged by the device this was traced on:
