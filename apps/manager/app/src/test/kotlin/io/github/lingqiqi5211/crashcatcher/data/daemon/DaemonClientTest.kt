@@ -22,15 +22,21 @@ class DaemonClientTest {
     @Test
     fun `the handshake runs before any other request`() = runTest {
         val transport = FakeTransport()
+        val trace = RecordingTrace()
         transport.script += handshakeReply(seq = 1)
 
-        val client = DaemonClient(transport, clientVersion = "0.1.0")
+        val client = DaemonClient(transport, clientVersion = "0.1.0", trace = trace)
         client.connect()
 
         assertEquals(listOf(ChannelHello.Control), transport.openedLanes)
         val first = transport.sentRequests.first()
         assertTrue(first.request is WireRequest.Handshake)
         assertEquals("0.1.0", client.daemonVersion)
+        assertTrue(trace.events.any { it.startsWith("handshake begin manager_protocol=") })
+        assertTrue(trace.events.any { it.startsWith("handshake accepted daemon_protocol=") })
+        assertTrue("routine frames must not fill the diagnostics log", trace.events.none {
+            it.startsWith("frame send") || it.startsWith("frame received")
+        })
     }
 
     @Test
@@ -101,6 +107,21 @@ class DaemonClientTest {
         )
     }
 
+    @Test
+    fun `a stale pending channel is skipped on the first request`() = runTest {
+        val transport = FakeTransport()
+        transport.script += FakeTransport.BROKEN_PIPE_MARKER
+        transport.script += handshakeReply(seq = 1)
+        transport.script += """{"seq":2,"ok":{"response":"closed"}}"""
+
+        val client = DaemonClient(transport, clientVersion = "0.1.0")
+        val reply = client.request(WireRequest.ClosePayload(handle = 1))
+
+        assertEquals(WireResponse.Closed, reply.response)
+        assertEquals(2, transport.openedLanes.size)
+        assertTrue(client.connected.value)
+    }
+
     /**
      * A broken pipe is what a dropped connection actually looks like from the socket, and it is
      * not a [DaemonException]. While it slipped past the retry, the dead channel stayed
@@ -127,12 +148,13 @@ class DaemonClientTest {
     @Test
     fun `a connection that cannot be re-established is reported as lost`() = runTest {
         val transport = FakeTransport()
+        val trace = RecordingTrace()
         transport.script += handshakeReply(seq = 1)
         transport.script += FakeTransport.BROKEN_PIPE_MARKER
         // Nothing left to script: the reconnect's handshake fails too, which is the daemon
         // being genuinely gone rather than restarting.
 
-        val client = DaemonClient(transport, clientVersion = "0.1.0")
+        val client = DaemonClient(transport, clientVersion = "0.1.0", trace = trace)
         val failure = runCatching {
             client.request(WireRequest.ClosePayload(handle = 1))
         }.exceptionOrNull()
@@ -140,20 +162,32 @@ class DaemonClientTest {
         assertTrue(failure != null)
         assertEquals(DomainErrorKind.ConnectionLost, failure?.toDomainError()?.kind)
         assertTrue("a lost connection must not read as connected", !client.connected.value)
+        assertTrue(trace.failures.any { (message, _) ->
+            message == "request failed; reconnecting once request=ClosePayload"
+        })
+        assertTrue(trace.failures.any { (message, _) -> message == "handshake failed" })
+        assertTrue(trace.failures.any { (message, _) ->
+            message == "request retry failed request=ClosePayload"
+        })
     }
 
     @Test
     fun `a rejection is surfaced rather than retried`() = runTest {
         val transport = FakeTransport()
+        val trace = RecordingTrace()
         transport.script += handshakeReply(seq = 1)
         transport.script += """{"seq":2,"err":{"code":"not_found","message":"gone"}}"""
 
-        val client = DaemonClient(transport, clientVersion = "0.1.0")
+        val client = DaemonClient(transport, clientVersion = "0.1.0", trace = trace)
         val failure = runCatching {
             client.request(WireRequest.GetRecord(RecordId("0".repeat(26))))
         }.exceptionOrNull()
 
         assertTrue(failure is DaemonException.Rejected)
+        assertTrue(trace.events.any { it == "request rejected seq=2 code=NotFound" })
+        assertTrue(trace.failures.any { (message, _) ->
+            message == "request rejected without retry request=GetRecord"
+        })
         // Retrying a rejection would just fail again, so it must not reconnect.
         assertEquals(1, transport.openedLanes.size)
     }
@@ -198,6 +232,19 @@ class DaemonClientTest {
         """{"seq":$seq,"ok":{"response":"handshake_result","protocol_version":${DaemonConstants.PROTOCOL_VERSION},"daemon_version":"0.1.0"}}"""
 }
 
+private class RecordingTrace : DaemonTrace {
+    val events = mutableListOf<String>()
+    val failures = mutableListOf<Pair<String, Throwable>>()
+
+    override fun event(message: String) {
+        events += message
+    }
+
+    override fun failure(message: String, cause: Throwable) {
+        failures += message to cause
+    }
+}
+
 /** A transport that replays a scripted sequence of reply frames. */
 private class FakeTransport : DaemonTransport {
     val script = mutableListOf<String>()
@@ -214,8 +261,6 @@ private class FakeTransport : DaemonTransport {
 
             override fun writeFrame(body: ByteArray) {
                 val text = body.decodeToString()
-                // The lane hello is not a request envelope; skip it.
-                if (text.contains("\"kind\"")) return
                 sentRequests += DaemonJson.decodeFromString<RequestEnvelope>(text)
             }
 

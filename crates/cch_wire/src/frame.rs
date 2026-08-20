@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::WireError;
 
-/// Abstract-namespace socket the manager app connects to.
+/// Abstract-namespace socket the manager app listens on and the daemon connects to.
 ///
-/// Passed verbatim to `LocalSocketAddress` with `Namespace.ABSTRACT` on the
-/// Kotlin side; Android prepends the conventional NUL byte on the wire.
-pub const MANAGER_SOCKET_NAME: &str = "crash_catcher_daemon_manager";
+/// Kept distinct from the old daemon listener name so updating the Manager before rebooting the
+/// module cannot collide with a pre-reversal daemon that is still alive.
+pub const MANAGER_SOCKET_NAME: &str = "crash_catcher_manager_listener";
 
 /// Abstract-namespace socket the privileged Java bridge connects to.
 pub const BRIDGE_SOCKET_NAME: &str = "crash_catcher_daemon_bridge";
@@ -43,7 +43,9 @@ pub const MAX_FRAME_BODY_BYTES: usize = 1024 * 1024;
 /// 4: log rotation. `read_runtime_log` takes a file name and answers with the listing, so a
 ///    manager that only knows version 3 would show one of up to eighteen files with no way to
 ///    reach the rest.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 5: reverse Manager transport. The Manager listens and the daemon connects, avoiding ROMs that
+///    deny app-domain → root-domain Unix `connectto` before the pinned peer can authenticate.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Which lane a connection is, decided by its very first frame.
 ///

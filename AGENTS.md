@@ -54,7 +54,7 @@ apps/manager/app/src/main/kotlin/.../crashcatcher/
 logd / DropBox / tombstone / ANR 文件
   → 各 collector → cch_merge 合一 → cch_store（SQLite 索引 + zstd 正文）
        ↑ root 守护进程 catcherd（module/service.sh 拉起，退避重启）
-       ├→ 抽象 unix socket @crash_catcher_daemon_manager ──→ 管理器（按签名 pin 鉴权）
+       ├→ 主动连接 @crash_catcher_manager_listener ←── 管理器监听（双向通道；按签名 pin 鉴权）
        └→ 抽象 unix socket @crash_catcher_daemon_bridge ──→ 特权 Java 桥（app_process）
                                                               通知 / 包名标签 / 启动 Activity
 ```

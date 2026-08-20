@@ -12,7 +12,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.lingqiqi5211.crashcatcher.data.daemon.RecordId
 import io.github.lingqiqi5211.crashcatcher.ui.detail.CrashDetailActivity
-import io.github.lingqiqi5211.crashcatcher.ui.shell.AppContainer
 import io.github.lingqiqi5211.crashcatcher.ui.shell.CrashCatcherApp
 import io.github.lingqiqi5211.crashcatcher.ui.theme.LocalCrashCatcherFloatingNavigationBar
 import io.github.lingqiqi5211.crashcatcher.ui.theme.LocalCrashCatcherPredictiveBack
@@ -35,7 +34,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         pendingRecord = intent.recordId()
-        val container = AppContainer(applicationContext)
+        val container = (application as CrashCatcherApplication).container
 
         setContent {
             val appearance by container.appearance.appearance.collectAsStateWithLifecycle()

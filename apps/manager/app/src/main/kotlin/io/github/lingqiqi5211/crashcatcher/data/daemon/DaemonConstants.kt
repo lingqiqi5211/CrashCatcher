@@ -10,14 +10,12 @@ import kotlin.time.Duration.Companion.seconds
  */
 object DaemonConstants {
     /**
-     * Abstract-namespace socket the daemon listens on.
+     * Abstract-namespace socket the Manager listens on and the daemon connects to.
      *
-     * Passed verbatim to `LocalSocketAddress` with `Namespace.ABSTRACT`; Android
-     * encodes the conventional leading NUL byte on the wire. Reaching a root
-     * daemon this way needs no SELinux policy of our own — Magisk's base policy
-     * already allows `untrusted_app` to connect to its domain.
+     * A distinct name from the old daemon listener avoids an updated Manager colliding with a
+     * still-running pre-reversal daemon before the module has rebooted.
      */
-    const val ABSTRACT_SOCKET_NAME = "crash_catcher_daemon_manager"
+    const val ABSTRACT_SOCKET_NAME = "crash_catcher_manager_listener"
 
     const val LENGTH_PREFIX_BYTES = 4
 
@@ -35,7 +33,7 @@ object DaemonConstants {
      * Bumped whenever either side needs the other updated with it — see the Rust constant for
      * why an additive request still counts, and what each version added.
      */
-    const val PROTOCOL_VERSION = 4
+    const val PROTOCOL_VERSION = 5
 
     val DEFAULT_REQUEST_TIMEOUT = 5.seconds
 }

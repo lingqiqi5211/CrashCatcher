@@ -1,9 +1,13 @@
 package io.github.lingqiqi5211.crashcatcher.data.daemon
 
 import android.net.LocalSocket
-import android.net.LocalSocketAddress
+import android.net.LocalServerSocket
 import java.io.Closeable
 import java.io.FileDescriptor
+import java.io.IOException
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 /**
  * One framed, bidirectional conversation with the daemon.
@@ -27,38 +31,130 @@ interface DaemonChannel : Closeable {
     fun takeFileDescriptors(): Array<FileDescriptor>?
 }
 
-/** Opens channels. Separate from [DaemonClient] so reconnection is a transport concern. */
+/** Acquires channels. Separate from [DaemonClient] so reconnection is a transport concern. */
 interface DaemonTransport {
     fun open(lane: ChannelHello): DaemonChannel
 }
 
 /**
- * Connects to the daemon's abstract-namespace socket.
+ * Listens for channels the root daemon connects into.
  *
- * Abstract namespace, so there is no filesystem object and no path permissions to
- * get wrong; the daemon authenticates us from `SO_PEERCRED` and our signing
- * certificate instead.
+ * The direction is deliberate: some ROMs deny an app-domain process connecting to a root-domain
+ * Unix socket before either side can authenticate. The daemon connecting to this app-domain
+ * listener keeps the same bidirectional stream and descriptor passing without widening SELinux.
+ * Both sides still fail closed: this side accepts only uid 0, while the daemon verifies this
+ * process's uid and APK certificate before it reads the lane frame.
  */
 class LocalSocketTransport(
     private val socketName: String = DaemonConstants.ABSTRACT_SOCKET_NAME,
+    private val trace: DaemonTrace = NoopDaemonTrace,
 ) : DaemonTransport {
+    private val incoming = IncomingDaemonChannels()
+
+    init {
+        thread(
+            start = true,
+            isDaemon = true,
+            name = "cch-manager-listener",
+            block = ::listen,
+        )
+    }
 
     override fun open(lane: ChannelHello): DaemonChannel {
-        val socket = LocalSocket(LocalSocket.SOCKET_STREAM)
+        trace.event("daemon channel wait begin name=@$socketName lane=$lane")
+        val channel = try {
+            incoming.take(CHANNEL_WAIT_MILLIS)
+        } catch (cause: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw DaemonException.ConnectionClosed("interrupted while waiting for daemon")
+        } ?: throw DaemonException.Timeout("waiting for daemon at @$socketName")
+        trace.event("daemon channel acquired name=@$socketName lane=$lane")
+
+        // The lane is still chosen by the Manager. The daemon maintains two authenticated,
+        // unassigned connections so control and subscribe can be opened independently.
         try {
-            socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
+            channel.writeFrame(DaemonJson.encodeToString(lane).encodeToByteArray())
+        } catch (cause: Exception) {
+            channel.close()
+            trace.failure("socket lane write failed lane=$lane", cause)
+            throw cause
+        }
+        trace.event("socket lane sent lane=$lane")
+        return channel
+    }
+
+    private fun listen() {
+        while (!Thread.currentThread().isInterrupted) {
+            var listener: LocalServerSocket? = null
+            try {
+                listener = LocalServerSocket(socketName)
+                trace.event("manager socket listener ready name=@$socketName")
+                while (!Thread.currentThread().isInterrupted) {
+                    accept(listener)
+                }
+            } catch (cause: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (cause: Exception) {
+                trace.failure("manager socket listener failed name=@$socketName", cause)
+            } finally {
+                runCatching { listener?.close() }
+            }
+            if (!Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(LISTENER_RETRY_MILLIS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+        }
+    }
+
+    private fun accept(listener: LocalServerSocket) {
+        val socket = listener.accept()
+        val credentials = try {
+            socket.peerCredentials
+                ?: throw IOException("accepted local socket has no peer credentials")
         } catch (cause: Exception) {
             runCatching { socket.close() }
-            throw DaemonException.ConnectionClosed(
-                "could not connect to @$socketName: ${cause.message}",
+            trace.failure("daemon peer credentials failed", cause)
+            return
+        }
+        if (credentials.uid != ROOT_UID) {
+            runCatching { socket.close() }
+            trace.event(
+                "daemon peer rejected uid=${credentials.uid} pid=${credentials.pid}",
             )
+            return
         }
 
         val channel = LocalSocketChannel(socket)
-        // The lane is decided by the very first frame, before anything else is sent.
-        channel.writeFrame(DaemonJson.encodeToString(lane).encodeToByteArray())
-        return channel
+        incoming.offer(channel)
+        trace.event("daemon peer accepted uid=${credentials.uid} pid=${credentials.pid}")
     }
+
+    private companion object {
+        const val ROOT_UID = 0
+        const val CHANNEL_WAIT_MILLIS = 5_000L
+        const val LISTENER_RETRY_MILLIS = 1_000L
+    }
+}
+
+/** Two daemon connections, matching the protocol's control and subscribe lanes. */
+internal class IncomingDaemonChannels(
+    capacity: Int = 2,
+) {
+    private val channels = ArrayBlockingQueue<DaemonChannel>(capacity)
+
+    /** Keeps the newest channels so a daemon restart cannot leave closed ones blocking the pool. */
+    fun offer(channel: DaemonChannel) {
+        while (!channels.offer(channel)) {
+            channels.poll()?.close()
+        }
+    }
+
+    @Throws(InterruptedException::class)
+    fun take(timeoutMillis: Long): DaemonChannel? =
+        channels.poll(timeoutMillis, TimeUnit.MILLISECONDS)
 }
 
 private class LocalSocketChannel(private val socket: LocalSocket) : DaemonChannel {

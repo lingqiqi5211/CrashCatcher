@@ -37,6 +37,7 @@ data class DaemonReply(
 class DaemonClient(
     private val transport: DaemonTransport,
     private val clientVersion: String,
+    private val trace: DaemonTrace = NoopDaemonTrace,
 ) {
     private val mutex = Mutex()
     private var channel: DaemonChannel? = null
@@ -69,14 +70,10 @@ class DaemonClient(
     }
 
     suspend fun request(request: WireRequest): DaemonReply = mutex.withLock {
-        // Connect on first use rather than making every caller remember to. The
-        // retry below is then only about a genuine mid-conversation drop, not about
-        // never having been connected.
-        if (channel == null) openLocked()
-
         // One transparent reconnect: the daemon restarting between two screens is
-        // ordinary, and making every caller handle it would spread the retry
-        // everywhere. A rejection is not retried — it would fail identically.
+        // ordinary, including when a stale pending socket is picked on the first request.
+        // Making every caller handle it would spread the retry everywhere. A rejection is not
+        // retried — it would fail identically.
         //
         // Any exception, not only `DaemonException`. Writing to a socket whose peer has gone
         // raises a plain `IOException` (EPIPE, ECONNRESET), and while that was slipping past
@@ -84,11 +81,19 @@ class DaemonClient(
         // reporting itself connected, so every later request failed the same way and only the
         // 重新连接 button could recover it.
         try {
+            // Connect on first use rather than making every caller remember to. This stays inside
+            // the retry boundary because a daemon restart can leave one closed pending channel
+            // ahead of its fresh replacement in the listener queue.
+            if (channel == null) openLocked()
             exchangeLocked(request)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Exception) {
-            if (cause is DaemonException.Rejected) throw cause
+            if (cause is DaemonException.Rejected) {
+                trace.failure("request rejected without retry request=${request.traceName}", cause)
+                throw cause
+            }
+            trace.failure("request failed; reconnecting once request=${request.traceName}", cause)
             closeLocked()
             // A failed retry leaves nothing usable behind, so it closes rather than keeping a
             // channel that only the next caller would discover is dead.
@@ -98,6 +103,7 @@ class DaemonClient(
             } catch (retry: CancellationException) {
                 throw retry
             } catch (retry: Exception) {
+                trace.failure("request retry failed request=${request.traceName}", retry)
                 closeLocked()
                 throw retry
             }
@@ -105,9 +111,19 @@ class DaemonClient(
     }
 
     private suspend fun openLocked() {
-        val opened = withContext(Dispatchers.IO) { transport.open(ChannelHello.Control) }
+        trace.event("control channel open begin")
+        val opened = try {
+            withContext(Dispatchers.IO) { transport.open(ChannelHello.Control) }
+        } catch (cause: Throwable) {
+            trace.failure("control channel open failed", cause)
+            throw cause
+        }
         channel = opened
         nextSeq = 1
+        trace.event(
+            "handshake begin manager_protocol=${DaemonConstants.PROTOCOL_VERSION} " +
+                "manager_version=$clientVersion",
+        )
 
         val handshake = try {
             val reply = exchangeLocked(
@@ -121,10 +137,15 @@ class DaemonClient(
                     "expected a handshake reply, got ${reply.response::class.simpleName}",
                 )
         } catch (cause: Throwable) {
+            trace.failure("handshake failed", cause)
             closeLocked()
             throw cause
         }
         if (handshake.protocolVersion != DaemonConstants.PROTOCOL_VERSION) {
+            trace.event(
+                "handshake version mismatch daemon_protocol=${handshake.protocolVersion} " +
+                    "manager_protocol=${DaemonConstants.PROTOCOL_VERSION}",
+            )
             closeLocked()
             throw DaemonException.Rejected(
                 WireError(
@@ -136,9 +157,14 @@ class DaemonClient(
         }
         daemonVersion = handshake.daemonVersion
         connectedState.value = true
+        trace.event(
+            "handshake accepted daemon_protocol=${handshake.protocolVersion} " +
+                "daemon_version=${handshake.daemonVersion}",
+        )
     }
 
     private fun closeLocked() {
+        if (channel != null) trace.event("control channel closing")
         channel?.close()
         channel = null
         daemonVersion = null
@@ -165,12 +191,19 @@ class DaemonClient(
                     "asked for seq $seq, daemon answered seq ${response.seq}",
                 )
             }
-            DaemonReply(response.result(), descriptors)
+            response.err?.let { error ->
+                trace.event("request rejected seq=$seq code=${error.code}")
+            }
+            val result = response.result()
+            DaemonReply(result, descriptors)
         }
     }
 
     override fun toString(): String = "DaemonClient(daemonVersion=$daemonVersion)"
 }
+
+private val WireRequest.traceName: String
+    get() = this::class.simpleName ?: "UnknownRequest"
 
 /**
  * Turns a transport-level or daemon-level failure into something the UI can act on.

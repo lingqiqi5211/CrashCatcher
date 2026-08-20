@@ -7,7 +7,7 @@ use crate::DaemonCore;
 
 pub struct DaemonServers {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    manager: std::thread::JoinHandle<()>,
+    manager: Vec<std::thread::JoinHandle<()>>,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     bridge: std::thread::JoinHandle<()>,
 }
@@ -42,6 +42,7 @@ mod platform {
         ptr,
         sync::Arc,
         thread,
+        time::Duration,
     };
 
     use cch_auth::{ManagerPin, peer_credentials};
@@ -58,13 +59,17 @@ mod platform {
         core: Arc<DaemonCore>,
         pin: ManagerPin,
     ) -> Result<DaemonServers, ServerError> {
-        let manager_listener = AbstractListener::bind(MANAGER_SOCKET_NAME)?;
         let bridge_listener = AbstractListener::bind(BRIDGE_SOCKET_NAME)?;
 
-        let manager_core = Arc::clone(&core);
-        let manager = thread::Builder::new()
-            .name("ct-manager-listener".to_owned())
-            .spawn(move || manager_accept_loop(manager_listener, manager_core, pin))?;
+        let manager = (0..MANAGER_CONNECTION_SLOTS)
+            .map(|slot| {
+                let manager_core = Arc::clone(&core);
+                let manager_pin = pin.clone();
+                thread::Builder::new()
+                    .name(format!("ct-manager-{slot}"))
+                    .spawn(move || manager_connect_loop(slot, manager_core, manager_pin))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let bridge = thread::Builder::new()
             .name("ct-bridge-listener".to_owned())
             .spawn(move || bridge_accept_loop(bridge_listener, core))?;
@@ -72,10 +77,9 @@ mod platform {
     }
 
     pub(super) fn wait(servers: DaemonServers) -> Result<(), ServerError> {
-        servers
-            .manager
-            .join()
-            .map_err(|_| ServerError::ThreadStopped)?;
+        for manager in servers.manager {
+            manager.join().map_err(|_| ServerError::ThreadStopped)?;
+        }
         servers
             .bridge
             .join()
@@ -83,25 +87,35 @@ mod platform {
         Err(ServerError::ThreadStopped)
     }
 
-    fn manager_accept_loop(listener: AbstractListener, core: Arc<DaemonCore>, pin: ManagerPin) {
+    /// Maintains one authenticated, unassigned connection into the Manager's listener.
+    ///
+    /// There are exactly two loops, matching the control and subscribe lanes. The Manager still
+    /// chooses a lane with the first frame, so the wire protocol and descriptor direction stay
+    /// unchanged; only the side that calls `connect(2)` is reversed for SELinux.
+    fn manager_connect_loop(slot: usize, core: Arc<DaemonCore>, pin: ManagerPin) {
+        let mut permission_denied_reported = false;
         loop {
-            match listener.accept() {
-                Ok(stream) => {
-                    let core = Arc::clone(&core);
-                    let pin = pin.clone();
-                    if let Err(error) = thread::Builder::new()
-                        .name("ct-manager-client".to_owned())
-                        .spawn(move || {
-                            if let Err(error) = handle_manager(stream, &core, &pin) {
-                                debug!(%error, "manager client disconnected");
-                            }
-                        })
-                    {
-                        warn!(%error, "failed to start manager client thread");
+            let result = AbstractConnector::connect(MANAGER_SOCKET_NAME)
+                .and_then(|stream| handle_manager(stream, &core, &pin));
+            match result {
+                Ok(()) => {
+                    permission_denied_reported = false;
+                    debug!(slot, "manager channel disconnected");
+                }
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    if !permission_denied_reported {
+                        warn!(slot, %error, "manager reverse connection denied");
+                        permission_denied_reported = true;
+                    } else {
+                        debug!(slot, %error, "manager reverse connection still denied");
                     }
                 }
-                Err(error) => warn!(%error, "manager socket accept failed"),
+                Err(error) => {
+                    permission_denied_reported = false;
+                    debug!(slot, %error, "manager listener unavailable");
+                }
             }
+            thread::sleep(MANAGER_RETRY_DELAY);
         }
     }
 
@@ -296,28 +310,31 @@ mod platform {
         fd: OwnedFd,
     }
 
-    impl AbstractListener {
-        fn bind(name: &str) -> io::Result<Self> {
-            if name.is_empty() || name.len() + 1 > 108 {
-                return Err(invalid_data("invalid abstract socket name"));
-            }
-            // SAFETY: socket has no pointer arguments and returns a fresh descriptor.
-            let raw_fd =
-                unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
-            if raw_fd < 0 {
+    struct AbstractConnector;
+
+    impl AbstractConnector {
+        fn connect(name: &str) -> io::Result<UnixStream> {
+            let fd = unix_stream_socket()?;
+            let (address, address_length) = abstract_address(name)?;
+            // SAFETY: fd is a fresh stream socket; address is initialized for its exact length.
+            if unsafe {
+                libc::connect(
+                    fd.as_raw_fd(),
+                    ptr::addr_of!(address).cast::<libc::sockaddr>(),
+                    address_length,
+                )
+            } != 0
+            {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: raw_fd is fresh and is transferred exactly once.
-            let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-            // SAFETY: zero is the correct initial representation for sockaddr_un.
-            let mut address: libc::sockaddr_un = unsafe { mem::zeroed() };
-            address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-            for (slot, byte) in address.sun_path[1..].iter_mut().zip(name.bytes()) {
-                *slot = byte as libc::c_char;
-            }
-            let address_length = offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
-            let address_length = libc::socklen_t::try_from(address_length)
-                .map_err(|_| invalid_data("socket address length overflow"))?;
+            Ok(fd.into())
+        }
+    }
+
+    impl AbstractListener {
+        fn bind(name: &str) -> io::Result<Self> {
+            let fd = unix_stream_socket()?;
+            let (address, address_length) = abstract_address(name)?;
             // SAFETY: address points to initialized storage and length includes the
             // leading NUL plus the exact abstract name bytes.
             if unsafe {
@@ -355,6 +372,36 @@ mod platform {
             Ok(unsafe { UnixStream::from_raw_fd(accepted) })
         }
     }
+
+    fn unix_stream_socket() -> io::Result<OwnedFd> {
+        // SAFETY: socket has no pointer arguments and returns a fresh descriptor.
+        let raw_fd =
+            unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if raw_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: raw_fd is fresh and is transferred exactly once.
+        Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+    }
+
+    fn abstract_address(name: &str) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
+        if name.is_empty() || name.len() + 1 > 108 {
+            return Err(invalid_data("invalid abstract socket name"));
+        }
+        // SAFETY: zero is the correct initial representation for sockaddr_un.
+        let mut address: libc::sockaddr_un = unsafe { mem::zeroed() };
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (slot, byte) in address.sun_path[1..].iter_mut().zip(name.bytes()) {
+            *slot = byte as libc::c_char;
+        }
+        let address_length = offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
+        let address_length = libc::socklen_t::try_from(address_length)
+            .map_err(|_| invalid_data("socket address length overflow"))?;
+        Ok((address, address_length))
+    }
+
+    const MANAGER_CONNECTION_SLOTS: usize = 2;
+    const MANAGER_RETRY_DELAY: Duration = Duration::from_secs(1);
 
     fn permission_denied(error: impl std::fmt::Display) -> io::Error {
         io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())

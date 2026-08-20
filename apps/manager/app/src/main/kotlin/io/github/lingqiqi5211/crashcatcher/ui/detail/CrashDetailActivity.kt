@@ -12,11 +12,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import io.github.lingqiqi5211.crashcatcher.CrashCatcherApplication
 import io.github.lingqiqi5211.crashcatcher.MainActivity
 import io.github.lingqiqi5211.crashcatcher.R
 import io.github.lingqiqi5211.crashcatcher.data.daemon.MuteScope
 import io.github.lingqiqi5211.crashcatcher.data.daemon.RecordId
-import io.github.lingqiqi5211.crashcatcher.ui.shell.AppContainer
 import io.github.lingqiqi5211.crashcatcher.ui.theme.ManagerTheme
 import kotlinx.coroutines.launch
 
@@ -38,13 +38,10 @@ import kotlinx.coroutines.launch
  */
 class CrashDetailActivity : ComponentActivity() {
 
-    /**
-     * Built per activity rather than shared with [MainActivity].
-     *
-     * The alert routinely runs when the manager is not open at all, so it cannot depend on
-     * anything the manager set up. Its repositories talk to the same daemon socket.
-     */
-    private val container by lazy { AppContainer(applicationContext) }
+    /** The alert may start the process, but it shares its one daemon listener with the manager. */
+    private val container by lazy {
+        (application as CrashCatcherApplication).container
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

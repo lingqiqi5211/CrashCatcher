@@ -12,7 +12,7 @@ import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorKind
  *
  * Branches on `code` and `kind`, never on `message`. The message is developer detail
  * written in English by the daemon — putting it on screen means showing a user
- * "could not connect to @crash_catcher_daemon_manager: Connection refused" and
+ * "waiting for daemon at @crash_catcher_manager_listener" and
  * expecting them to know what to do with it.
  */
 @Composable
