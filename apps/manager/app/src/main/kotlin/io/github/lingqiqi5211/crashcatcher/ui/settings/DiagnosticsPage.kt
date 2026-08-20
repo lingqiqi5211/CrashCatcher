@@ -1,18 +1,9 @@
 package io.github.lingqiqi5211.crashcatcher.ui.settings
 
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
 import io.github.lingqiqi5211.crashcatcher.R
 import io.github.lingqiqi5211.crashcatcher.domain.model.DeviceInfo
 import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsNavigationRow
@@ -20,22 +11,16 @@ import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsSection
 import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsSwitchRow
 import io.github.lingqiqi5211.crashcatcher.ui.components.WarningCard
 import io.github.lingqiqi5211.crashcatcher.ui.home.formatBytes
-import io.github.lingqiqi5211.crashcatcher.ui.util.errorDescription
-import io.github.lingqiqi5211.crashcatcher.ui.util.errorTitle
 import io.github.lingqiqi5211.meowui.component.MeowPreferencePage
 import io.github.lingqiqi5211.meowui.component.MeowTipStyle
-import io.github.lingqiqi5211.meowui.theme.MeowTheme
 
 /**
- * Why the module is not doing what it should.
+ * Why the module is not working.
  *
- * Reachable when the daemon is not, which is the whole point: the switches elsewhere are all
- * writes, and none of them can be reached to *ask* a question. What is here reads.
+ * Every row here reads, so the page still works when the daemon does not. That is when it gets
+ * opened: the other settings pages all write, and grey out.
  *
- * Three parts, in the order they get used. The chain — whether each link is up — answers "which
- * link is down". The log answers "why". The report is what gets pasted into an issue, because
- * the answer to that question is usually a combination and retyping a screen of facts loses
- * exactly the one that mattered.
+ * The chain says which link is down, the log says why, the report is what goes into an issue.
  */
 @Composable
 internal fun DiagnosticsPage(
@@ -54,23 +39,24 @@ internal fun DiagnosticsPage(
         modifier = modifier,
         onBackClick = onBack,
     ) {
+        // The most common finding on this page, so it is stated rather than left as blanks.
+        //
+        // Outside the section below, not an item in it: a preference group draws label-and-value
+        // rows on one card, and a tip dropped in among them arrives with its own fill and icon —
+        // one row in the stack looking like it belongs to another screen.
+        if (status == null) {
+            WarningCard(
+                title = stringResource(R.string.diagnostics_daemon_unreachable),
+                body = stringResource(R.string.diagnostics_daemon_unreachable_body),
+                style = MeowTipStyle.Warning,
+                modifier = Modifier.testTag("crashcatcher.diagnostics.unreachable"),
+            )
+        }
+
         SettingsSection(
             title = stringResource(R.string.diagnostics_section_chain),
             testTag = "crashcatcher.diagnostics.chain",
         ) {
-            // Unreachable is a finding, not an absence of findings — and the most common one on
-            // this page. Said plainly, next to the number that is half of a version mismatch.
-            if (status == null) {
-                item(key = "daemon-unreachable") {
-                    WarningCard(
-                        title = stringResource(R.string.diagnostics_daemon_unreachable),
-                        body = stringResource(R.string.diagnostics_daemon_unreachable_body),
-                        style = MeowTipStyle.Warning,
-                        modifier = Modifier.testTag("crashcatcher.diagnostics.unreachable"),
-                    )
-                }
-            }
-
             SettingsNavigationRow(
                 title = stringResource(R.string.diagnostics_daemon),
                 description = status?.let {
@@ -84,8 +70,8 @@ internal fun DiagnosticsPage(
             )
             SettingsNavigationRow(
                 title = stringResource(R.string.diagnostics_bridge),
-                // The bridge posts every notification, so "connected" is the difference between
-                // silence and working alerts — and its own version catches a stale dex.
+                // The bridge posts every notification, so disconnected means silence. Its
+                // version catches a stale dex.
                 description = status?.runtime?.bridge?.let { bridge ->
                     if (bridge.connected) {
                         stringResource(
@@ -133,20 +119,25 @@ internal fun DiagnosticsPage(
                 enabled = config != null,
                 modifier = Modifier.testTag("crashcatcher.diagnostics.debug"),
             )
+            // A row leading to its own page, not the log itself: a preference list lays out
+            // label-and-value rows, and a log is fixed-width text that has to pan sideways —
+            // nested here, that gesture fights the list's own scroll.
             SettingsNavigationRow(
-                title = stringResource(R.string.diagnostics_refresh_log),
-                description = if (log.totalBytes > 0) {
-                    stringResource(R.string.diagnostics_log_size, formatBytes(log.totalBytes))
+                title = stringResource(R.string.diagnostics_open_log),
+                // Every file, not the one that happens to be selected: rotation means there are
+                // up to eighteen, and this row is the answer to "how much are the logs".
+                description = if (log.allBytes > 0) {
+                    stringResource(
+                        R.string.diagnostics_log_size,
+                        log.files.size,
+                        formatBytes(log.allBytes),
+                    )
                 } else {
-                    stringResource(R.string.diagnostics_refresh_log_summary)
+                    stringResource(R.string.diagnostics_open_log_summary)
                 },
-                onClick = actions.onRefreshLog,
-                modifier = Modifier.testTag("crashcatcher.diagnostics.refresh"),
+                onClick = actions.onOpenLog,
+                modifier = Modifier.testTag("crashcatcher.diagnostics.openlog"),
             )
-
-            item(key = "runtime-log") {
-                RuntimeLogBlock(log)
-            }
         }
 
         SettingsSection(
@@ -154,19 +145,10 @@ internal fun DiagnosticsPage(
             testTag = "crashcatcher.diagnostics.report",
         ) {
             SettingsNavigationRow(
-                title = stringResource(R.string.diagnostics_copy_report),
-                description = stringResource(R.string.diagnostics_copy_report_summary),
-                onClick = { actions.onCopyReport(buildReport(state, device)) },
-                modifier = Modifier.testTag("crashcatcher.diagnostics.copy"),
-            )
-            SettingsNavigationRow(
                 title = stringResource(R.string.diagnostics_share_report),
-                description = stringResource(R.string.diagnostics_share_report_summary),
-                // The log goes with it: a report saying which link is down without the lines
+                // The logs go with it: a report saying which link is down without the lines
                 // that say why is the half of the answer that is easy to guess.
-                onClick = {
-                    actions.onShareReport(buildReport(state, device) + "\n" + log.text)
-                },
+                onClick = { actions.onShareReport(buildReport(state, device)) },
                 modifier = Modifier.testTag("crashcatcher.diagnostics.share"),
             )
         }
@@ -180,50 +162,8 @@ private fun buildReport(state: SettingsUiState, device: DeviceInfo): String =
         connected = state.moduleStatus != null,
     )
 
-/**
- * The log itself, monospaced and never wrapped.
- *
- * A tracing line is a timestamp, a level, a target and a message; wrapped, the columns stop
- * lining up and the level — the thing being scanned for — is no longer at a fixed offset. One
- * scroll container for the whole block, since a per-line one would fight over `maxValue`.
- */
-@Composable
-private fun RuntimeLogBlock(log: RuntimeLogUiState) {
-    val body = when {
-        log.isLoading && log.text.isEmpty() -> stringResource(R.string.loading)
-        log.error != null -> "${errorTitle(log.error)}\n${errorDescription(log.error)}"
-        log.isEmpty -> stringResource(R.string.diagnostics_log_empty)
-        else -> log.text
-    }
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        if (log.truncated) {
-            Text(
-                text = stringResource(R.string.diagnostics_log_truncated),
-                style = MeowTheme.typography.summary,
-                color = MeowTheme.colors.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-        SelectionContainer {
-            Text(
-                text = body,
-                style = MeowTheme.typography.summary,
-                fontFamily = FontFamily.Monospace,
-                color = MeowTheme.colors.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .testTag("crashcatcher.diagnostics.logtext"),
-            )
-        }
-    }
-}
-
 internal data class DiagnosticsActions(
     val onDebugLoggingChange: (Boolean) -> Unit,
-    val onRefreshLog: () -> Unit,
-    val onCopyReport: (String) -> Unit,
+    val onOpenLog: () -> Unit,
     val onShareReport: (String) -> Unit,
 )

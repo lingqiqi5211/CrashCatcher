@@ -453,10 +453,15 @@ private val CollectorSource.labelRes: Int
         CollectorSource.AnrFile -> R.string.collector_anr_file
     }
 
-/** Byte counts in the largest unit that keeps the number readable. */
+/**
+ * Byte counts in the largest unit that keeps the number readable.
+ *
+ * Steps of 1024 labelled KB/MB/GB, which is what a file manager on this phone shows. The
+ * pedantically correct KiB/MiB is not what anyone reading a storage figure expects to see.
+ */
 internal fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return "$bytes B"
-    val units = listOf("KiB", "MiB", "GiB")
+    val units = listOf("KB", "MB", "GB")
     var value = bytes.toDouble() / 1024
     var unit = 0
     while (value >= 1024 && unit < units.lastIndex) {

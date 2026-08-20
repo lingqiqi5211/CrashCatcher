@@ -64,6 +64,7 @@ import io.github.lingqiqi5211.crashcatcher.ui.crashes.RecordDetailScreen
 import io.github.lingqiqi5211.crashcatcher.ui.crashes.RecordDetailViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.util.copyLog
 import io.github.lingqiqi5211.crashcatcher.ui.util.errorTitle
+import io.github.lingqiqi5211.crashcatcher.ui.util.shareArchive
 import io.github.lingqiqi5211.crashcatcher.ui.util.shareLog
 import io.github.lingqiqi5211.crashcatcher.ui.util.shortTypeName
 import io.github.lingqiqi5211.crashcatcher.ui.home.HomeScreen
@@ -80,6 +81,8 @@ import io.github.lingqiqi5211.crashcatcher.ui.settings.NotifySettingsPage
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsActions
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsScreenContent
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsUiState
+import io.github.lingqiqi5211.crashcatcher.ui.settings.RuntimeLogActions
+import io.github.lingqiqi5211.crashcatcher.ui.settings.RuntimeLogPage
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.settings.StorageSettingsPage
 import kotlin.math.abs
@@ -201,29 +204,49 @@ internal fun CrashCatcherApp(
                 val context = LocalContext.current
                 val logViewModel: DiagnosticsViewModel = viewModel(factory = factory)
                 val log by logViewModel.uiState.collectAsStateWithLifecycle()
-                // Read once on arrival: this is a pull, not a subscription — the log is only
-                // interesting at the moment someone comes looking at it.
-                LaunchedEffect(Unit) { logViewModel.refresh() }
                 val reportLabel = stringResource(R.string.diagnostics_report_label)
 
                 SettingsSubPage(factory) { state, actions ->
+                    // A pull, not a subscription — but keyed on whether the daemon is there, so
+                    // opening this page while it was down and then starting it does not leave
+                    // the failed read on screen for as long as the page stays open.
+                    LaunchedEffect(state.daemonReachable) { logViewModel.refresh() }
+
                     DiagnosticsPage(
                         state = state,
                         log = log,
                         device = remember { readDeviceInfo() },
                         actions = DiagnosticsActions(
                             onDebugLoggingChange = actions.onDebugLoggingChange,
-                            onRefreshLog = logViewModel::refresh,
-                            onCopyReport = { report ->
-                                copyLog(context, reportLabel, report)
-                            },
+                            onOpenLog = { backStack = backStack + Page.RuntimeLog },
+                            // The report plus every log file, as one archive. Reading them all
+                            // takes a request each, so it runs off the main thread.
                             onShareReport = { report ->
-                                shareLog(context, reportLabel, report)
+                                scope.launch {
+                                    val entries = linkedMapOf("report.txt" to report)
+                                    entries.putAll(logViewModel.readAll())
+                                    shareArchive(context, reportLabel, entries)
+                                }
                             },
                         ),
                         onBack = pop,
                     )
                 }
+            }
+
+            is Page.RuntimeLog -> {
+                val logViewModel: DiagnosticsViewModel = viewModel(factory = factory)
+                val log by logViewModel.uiState.collectAsStateWithLifecycle()
+                LaunchedEffect(Unit) { logViewModel.refresh() }
+
+                RuntimeLogPage(
+                    log = log,
+                    actions = RuntimeLogActions(
+                        onRefresh = logViewModel::refresh,
+                        onSelect = logViewModel::select,
+                    ),
+                    onBack = pop,
+                )
             }
 
             is Page.About -> {
@@ -744,6 +767,7 @@ private fun Page.toRoute(): String = when (this) {
     is Page.DialogSettings -> "settings/dialog"
     is Page.StorageSettings -> "settings/storage"
     is Page.Diagnostics -> "settings/diagnostics"
+    is Page.RuntimeLog -> "settings/log"
     is Page.About -> "about"
 }
 
@@ -755,6 +779,7 @@ private fun String.toPage(): Page? = when {
     this == "settings/dialog" -> Page.DialogSettings
     this == "settings/storage" -> Page.StorageSettings
     this == "settings/diagnostics" -> Page.Diagnostics
+    this == "settings/log" -> Page.RuntimeLog
     this == "about" -> Page.About
     startsWith("group/") -> Page.GroupDetail(removePrefix("group/"))
     startsWith("record/") -> Page.RecordDetail(RecordId(removePrefix("record/")))

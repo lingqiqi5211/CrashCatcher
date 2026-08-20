@@ -7,6 +7,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * Handing a crash log to somewhere outside the app.
@@ -54,6 +56,53 @@ internal fun shareLog(context: Context, subject: String, text: String): Boolean 
 }
 
 /**
+ * Offers several files as one `.zip`. False if nothing could receive it.
+ *
+ * The diagnostics hand-off is a report plus up to eighteen rotated logs. As separate attachments
+ * most targets take only the first; as one concatenated text file the boundaries are lost.
+ */
+internal fun shareArchive(
+    context: Context,
+    subject: String,
+    entries: Map<String, String>,
+): Boolean {
+    val uri = writeArchive(context, subject, entries) ?: return false
+
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = ARCHIVE_MIME_TYPE
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        clipData = ClipData.newRawUri(subject, uri)
+    }
+
+    return runCatching { context.startActivity(Intent.createChooser(send, null)) }.isSuccess
+}
+
+private fun writeArchive(
+    context: Context,
+    subject: String,
+    entries: Map<String, String>,
+): Uri? = runCatching {
+    val directory = File(context.cacheDir, SHARE_DIRECTORY)
+    directory.listFiles()?.forEach { it.delete() }
+    directory.mkdirs()
+
+    val file = File(directory, shareFileName(subject).removeSuffix(".txt") + ".zip")
+    ZipOutputStream(file.outputStream().buffered()).use { zip ->
+        for ((name, text) in entries) {
+            // Flattened: `old/daemon.log` would otherwise become a directory in the archive,
+            // and some viewers show only the top level.
+            zip.putNextEntry(ZipEntry(name.replace('/', '-')))
+            zip.write(text.toByteArray())
+            zip.closeEntry()
+        }
+    }
+
+    FileProvider.getUriForFile(context, "${context.packageName}$SHARE_AUTHORITY_SUFFIX", file)
+}.getOrNull()
+
+/**
  * Writes the log where a [FileProvider] can serve it, and returns its content Uri.
  *
  * Previous hand-offs are cleared first rather than left to accumulate: they are one-shot
@@ -83,6 +132,8 @@ private fun shareFileName(subject: String): String {
 }
 
 private const val MIME_TYPE = "text/plain"
+
+private const val ARCHIVE_MIME_TYPE = "application/zip"
 
 private const val SHARE_DIRECTORY = "shares"
 

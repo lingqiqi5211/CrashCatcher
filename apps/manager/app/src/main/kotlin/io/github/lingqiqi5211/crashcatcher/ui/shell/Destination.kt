@@ -91,5 +91,8 @@ internal sealed interface Page {
     /** Reachable when the daemon is not: everything on it reads rather than writes. */
     data object Diagnostics : Page
 
+    /** The daemon's log, on its own page: a wall of fixed-width text that pans sideways. */
+    data object RuntimeLog : Page
+
     data object About : Page
 }

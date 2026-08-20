@@ -2,8 +2,6 @@ package io.github.lingqiqi5211.crashcatcher.ui.crashes
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -33,26 +31,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.unit.takeOrElse
 import io.github.lingqiqi5211.crashcatcher.R
 import io.github.lingqiqi5211.crashcatcher.data.daemon.ExportRedaction
 import io.github.lingqiqi5211.crashcatcher.data.daemon.PayloadState
 import io.github.lingqiqi5211.crashcatcher.ui.components.CrashCatcherLoadingState
+import io.github.lingqiqi5211.crashcatcher.ui.components.MAX_ZOOM
+import io.github.lingqiqi5211.crashcatcher.ui.components.MIN_ZOOM
 import io.github.lingqiqi5211.crashcatcher.ui.components.WarningCard
+import io.github.lingqiqi5211.crashcatcher.ui.components.monospaceTextStyle
+import io.github.lingqiqi5211.crashcatcher.ui.components.monospaceContentWidth
+import io.github.lingqiqi5211.crashcatcher.ui.components.pinchToZoom
 import io.github.lingqiqi5211.crashcatcher.ui.util.processSuffix
 import io.github.lingqiqi5211.crashcatcher.ui.util.shortTypeName
 import io.github.lingqiqi5211.meowui.component.MeowMultiChoiceDialog
@@ -168,7 +164,7 @@ internal fun RecordDetailScreen(
         val panState = rememberScrollState()
 
         var zoom by rememberSaveable { mutableStateOf(1f) }
-        val traceStyle = traceTextStyle(zoom)
+        val traceStyle = monospaceTextStyle(zoom)
 
         // The heading stays; only the trace moves.
         //
@@ -347,26 +343,6 @@ private fun ExportFieldDialog(
 }
 
 /**
- * The style every trace line shares, scaled by the pinch gesture.
- *
- * One style object for the whole list, so the width measurement below and what is
- * actually drawn cannot disagree — a pan sized against a different font than the text
- * either clips the longest line or pans into empty space.
- */
-@Composable
-private fun traceTextStyle(zoom: Float): TextStyle {
-    val summary = MeowTheme.typography.summary
-    return remember(summary, zoom) {
-        val size = summary.fontSize.takeOrElse { DEFAULT_TRACE_FONT_SIZE } * zoom
-        summary.copy(
-            fontFamily = FontFamily.Monospace,
-            fontSize = size,
-            lineHeight = size * TRACE_LINE_HEIGHT,
-        )
-    }
-}
-
-/**
  * How wide the trace has to be laid out for nothing to be clipped when panning.
  *
  * Measured rather than estimated, because the answer decides whether the last character
@@ -381,16 +357,12 @@ private fun traceWidth(
     expandedFolds: Set<Int>,
     style: TextStyle,
 ): Dp {
-    val measurer = rememberTextMeasurer()
-    val density = LocalDensity.current
-    val gutter = MeowTheme.dimensions.pageHorizontalPadding * 2 + FRAME_RAIL_GUTTER
-    return remember(items, expandedFolds, style, measurer, density, gutter) {
-        val widest = widestLines(visibleLines(items, expandedFolds), WIDTH_CANDIDATES)
-        val pixels = widest.maxOfOrNull { line ->
-            measurer.measure(text = line, style = style, softWrap = false).size.width
-        } ?: 0
-        with(density) { pixels.toDp() } + gutter
-    }
+    val lines = remember(items, expandedFolds) { visibleLines(items, expandedFolds) }
+    return monospaceContentWidth(
+        lines = lines,
+        style = style,
+        gutter = MeowTheme.dimensions.pageHorizontalPadding * 2 + FRAME_RAIL_GUTTER,
+    )
 }
 
 /** The lines actually on screen — a collapsed run contributes nothing to the width. */
@@ -405,60 +377,6 @@ private fun visibleLines(items: List<StackItem>, expandedFolds: Set<Int>): List<
             }
         }
     }
-
-/**
- * The [count] longest lines, by estimated columns.
- *
- * One pass, with the estimate computed once per line. Sorting instead would re-run it on
- * every comparison, and a tombstone runs to tens of thousands of lines — enough for the
- * difference to be felt on each pinch, since the width is measured again whenever the
- * font size changes.
- */
-private fun widestLines(lines: List<String>, count: Int): List<String> {
-    val top = ArrayList<Pair<String, Int>>(count + 1)
-    for (line in lines) {
-        val columns = displayColumns(line)
-        if (top.size == count && columns <= top[top.size - 1].second) continue
-        val at = top.indexOfFirst { columns > it.second }.takeIf { it >= 0 } ?: top.size
-        top.add(at, line to columns)
-        if (top.size > count) top.removeAt(top.size - 1)
-    }
-    return top.map { it.first }
-}
-
-/** Rough printed width of a line, counting anything past the ASCII range as double. */
-private fun displayColumns(text: String): Int {
-    var columns = 0
-    for (character in text) {
-        columns += if (character.code >= WIDE_CHARACTER_START) 2 else 1
-    }
-    return columns
-}
-
-/**
- * Two-finger resize, without taking the one-finger gestures away.
- *
- * Claimed on the initial pass: the list's scroll and the selection handles both react on
- * the main pass, so a pinch that waited its turn would have scrolled the trace and
- * started selecting text before it was recognised. Single-pointer events are left
- * untouched and reach them as usual.
- */
-private fun Modifier.pinchToZoom(onZoom: (Float) -> Unit): Modifier = pointerInput(Unit) {
-    awaitEachGesture {
-        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        do {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            val pressed = event.changes.filter { it.pressed }
-            if (pressed.size >= 2) {
-                val spread = (pressed[0].position - pressed[1].position).getDistance()
-                val before =
-                    (pressed[0].previousPosition - pressed[1].previousPosition).getDistance()
-                if (before > 0f && spread > 0f) onZoom(spread / before)
-                pressed.forEach { it.consume() }
-            }
-        } while (event.changes.any { it.pressed })
-    }
-}
 
 @Composable
 private fun PayloadNotice(state: RecordDetailUiState, width: Dp) {
@@ -579,20 +497,6 @@ private fun StackItem.stableKey(): String = when (this) {
     is StackItem.Line -> "line-${line.index}"
     is StackItem.FoldedFrames -> "fold-$firstIndex"
 }
-
-/** Used only if the active style leaves `summary` without a size of its own. */
-private val DEFAULT_TRACE_FONT_SIZE = 13.sp
-
-private const val TRACE_LINE_HEIGHT = 1.4f
-
-private const val MIN_ZOOM = 0.7f
-private const val MAX_ZOOM = 2.5f
-
-/** How many of the longest lines are measured exactly. */
-private const val WIDTH_CANDIDATES = 5
-
-/** Where the column estimate starts assuming double-width glyphs. */
-private const val WIDE_CHARACTER_START = 0x1100
 
 /** The rail and its gap, which sit to the left of every frame. */
 private val FRAME_RAIL_GUTTER = 12.dp
