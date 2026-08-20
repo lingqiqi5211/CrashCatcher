@@ -57,6 +57,7 @@ internal enum class AppNotifyChoice {
 
 internal data class AppDetailUiState(
     val packageName: String = "",
+    val userId: Int = 0,
     val config: AppConfig = AppConfig(),
     val groups: List<GroupSummary> = emptyList(),
     val isLoading: Boolean = true,
@@ -67,9 +68,9 @@ internal data class AppDetailUiState(
     /**
      * Whether this page is about a platform process rather than an app.
      *
-     * The daemon's verdict where a row has arrived, since the route carries only a name; the
-     * name's own shape until then, so the page does not open as an app and rearrange itself a
-     * moment later.
+     * The daemon's verdict where a row has arrived, since the route carries identity but no
+     * package classification; the name's own shape until then, so the page does not open as an
+     * app and rearrange itself a moment later.
      */
     val isPlatformProcess: Boolean
         get() = groups.firstOrNull()
@@ -86,12 +87,13 @@ internal class AppDetailViewModel(
     private val state = MutableStateFlow(AppDetailUiState())
     val uiState: StateFlow<AppDetailUiState> = state.asStateFlow()
 
-    private var loaded: String? = null
+    private var loaded: Pair<String, Int>? = null
 
-    fun load(packageName: String) {
-        if (loaded == packageName) return
-        loaded = packageName
-        state.value = AppDetailUiState(packageName = packageName)
+    fun load(packageName: String, userId: Int) {
+        val target = packageName to userId
+        if (loaded == target) return
+        loaded = target
+        state.value = AppDetailUiState(packageName = packageName, userId = userId)
 
         viewModelScope.launch {
             config.appConfig(packageName)
@@ -101,6 +103,7 @@ internal class AppDetailViewModel(
             crashes.listGroups(
                 filter = CrashFilter(
                     packages = listOf(packageName),
+                    userIds = listOf(userId),
                     // The user opened this entry deliberately, so its own crashes show
                     // regardless of the list's filters. Both of them: without the second, a
                     // platform process's page came up with no history at all — the very rows
@@ -134,8 +137,9 @@ internal class AppDetailViewModel(
     }
 
     fun onReopen() {
-        val packageName = state.value.packageName.takeIf { it.isNotEmpty() } ?: return
-        viewModelScope.launch { apps.reopen(packageName, userId = 0) }
+        val current = state.value
+        val packageName = current.packageName.takeIf { it.isNotEmpty() } ?: return
+        viewModelScope.launch { apps.reopen(packageName, userId = current.userId) }
     }
 
     private fun patch(patch: AppConfigPatch) {

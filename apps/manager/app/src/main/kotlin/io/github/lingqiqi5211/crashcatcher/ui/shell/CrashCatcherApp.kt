@@ -169,6 +169,7 @@ internal fun CrashCatcherApp(
             is Page.AppDetail -> AppDetailPage(
                 factory = factory,
                 packageName = page.packageName,
+                userId = page.userId,
                 onBack = pop,
                 onOpenGroup = { group -> backStack = backStack + Page.GroupDetail(group.groupId) },
             )
@@ -452,7 +453,7 @@ private fun RootShell(
                             Destination.Apps -> AppsScreen(
                                 state = appsState,
                                 actions = appsViewModel.actions { app ->
-                                    onPush(Page.AppDetail(app.packageName))
+                                    onPush(Page.AppDetail(app.packageName, app.userId))
                                 },
                             )
 
@@ -722,11 +723,12 @@ private fun GroupDetailPage(
 private fun AppDetailPage(
     factory: AppViewModelFactory,
     packageName: String,
+    userId: Int,
     onBack: () -> Unit,
     onOpenGroup: (GroupSummary) -> Unit,
 ) {
     val viewModel: AppDetailViewModel = viewModel(factory = factory)
-    LaunchedEffect(packageName) { viewModel.load(packageName) }
+    LaunchedEffect(packageName, userId) { viewModel.load(packageName, userId) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     AppDetailScreen(
@@ -756,11 +758,11 @@ private val PageStackSaver = listSaver<MutableState<List<Page>>, String>(
     },
 )
 
-private fun Page.toRoute(): String = when (this) {
+internal fun Page.toRoute(): String = when (this) {
     is Page.Shell -> "shell"
     is Page.GroupDetail -> "group/$groupId"
     is Page.RecordDetail -> "record/${id.value}"
-    is Page.AppDetail -> "app/$packageName"
+    is Page.AppDetail -> "app/$userId/$packageName"
     is Page.Appearance -> "appearance"
     is Page.CaptureSettings -> "settings/capture"
     is Page.NotifySettings -> "settings/notify"
@@ -771,7 +773,7 @@ private fun Page.toRoute(): String = when (this) {
     is Page.About -> "about"
 }
 
-private fun String.toPage(): Page? = when {
+internal fun String.toPage(): Page? = when {
     this == "shell" -> Page.Shell
     this == "appearance" -> Page.Appearance
     this == "settings/capture" -> Page.CaptureSettings
@@ -783,6 +785,15 @@ private fun String.toPage(): Page? = when {
     this == "about" -> Page.About
     startsWith("group/") -> Page.GroupDetail(removePrefix("group/"))
     startsWith("record/") -> Page.RecordDetail(RecordId(removePrefix("record/")))
-    startsWith("app/") -> Page.AppDetail(removePrefix("app/"))
+    startsWith("app/") -> {
+        val target = removePrefix("app/")
+        val separator = target.indexOf('/')
+        val user = if (separator >= 0) target.take(separator).toIntOrNull() else null
+        if (user == null) {
+            Page.AppDetail(target, userId = 0)
+        } else {
+            Page.AppDetail(target.substring(separator + 1), user)
+        }
+    }
     else -> null
 }

@@ -1,33 +1,48 @@
 package io.github.lingqiqi5211.crashcatcher.ui.detail
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.lingqiqi5211.crashcatcher.R
 import io.github.lingqiqi5211.crashcatcher.data.daemon.GroupSummary
 import io.github.lingqiqi5211.crashcatcher.data.daemon.RecordId
+import io.github.lingqiqi5211.crashcatcher.ui.components.AppIcon
 import io.github.lingqiqi5211.crashcatcher.ui.components.CrashCatcherButton
 import io.github.lingqiqi5211.crashcatcher.ui.components.CrashCatcherTextButton
 import io.github.lingqiqi5211.crashcatcher.ui.components.rememberAppLabel
+import io.github.lingqiqi5211.crashcatcher.ui.theme.isMiuixStyle
 import io.github.lingqiqi5211.crashcatcher.ui.util.shortTypeName
 import io.github.lingqiqi5211.meowui.component.MeowCard
+import io.github.lingqiqi5211.meowui.theme.MeowIcons
 import io.github.lingqiqi5211.meowui.theme.MeowTheme
 
 /** What the alert knows about the crash it is announcing. */
-internal data class CrashAlertUiState(val group: GroupSummary? = null)
+internal data class CrashAlertUiState(
+    val packageName: String? = null,
+    val group: GroupSummary? = null,
+)
 
 /**
  * The crash alert itself.
@@ -58,8 +73,9 @@ internal fun CrashAlertDialog(
     if (!show) return
 
     val group = state.group
-    val label = rememberAppLabel(group?.packageName.orEmpty())
-    val name = label ?: group?.packageName
+    val packageName = group?.packageName ?: state.packageName
+    val label = rememberAppLabel(packageName.orEmpty())
+    val name = label ?: packageName
 
     val title = if (name == null) {
         stringResource(R.string.alert_title_unknown)
@@ -67,36 +83,36 @@ internal fun CrashAlertDialog(
         stringResource(R.string.alert_title, name)
     }
 
+    val exceptionClass = group?.summaryClass?.let(::shortTypeName)
+    val summaryText = group?.summaryText?.takeIf { it.isNotBlank() }
+    val unknownMessage = stringResource(R.string.alert_message_unknown)
     val message = buildString {
-        group?.summaryClass?.let(::shortTypeName)?.let(::append)
-        group?.summaryText?.takeIf { it.isNotBlank() }?.let { text ->
+        exceptionClass?.let(::append)
+        summaryText?.let { text ->
             if (isNotEmpty()) append('\n')
             append(text)
         }
-        if (isEmpty()) append(stringResource(R.string.alert_message_unknown))
+        if (isEmpty()) append(unknownMessage)
     }
+    val miuix = isMiuixStyle()
 
     Dialog(onDismissRequest = onDismiss) {
         MeowCard(
             modifier = Modifier.testTag("crashcatcher.alert"),
-            contentPadding = PaddingValues(20.dp),
+            contentPadding = PaddingValues(if (miuix) 20.dp else 24.dp),
         ) {
-            Text(
-                text = title,
-                style = MeowTheme.typography.sectionTitle,
-                fontWeight = FontWeight.SemiBold,
-                color = MeowTheme.colors.onSurface,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = message,
-                style = MeowTheme.typography.summary,
-                color = MeowTheme.colors.onSurfaceVariant,
-                // A crash message can be a paragraph; this is an interruption over another
-                // app, not a place to read the whole thing. The log is one tap away.
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (miuix) {
+                CompactAlertSummary(title = title, message = message)
+            } else {
+                ExpressiveAlertSummary(
+                    packageName = packageName,
+                    label = name,
+                    title = title,
+                    exceptionClass = exceptionClass,
+                    summaryText = summaryText,
+                    unknownMessage = unknownMessage,
+                )
+            }
 
             Spacer(Modifier.height(16.dp))
 
@@ -143,17 +159,134 @@ internal fun CrashAlertDialog(
     }
 }
 
+/** Keeps the established Miuix dialog compact while MD3E gets its own stronger hierarchy. */
+@Composable
+private fun CompactAlertSummary(title: String, message: String) {
+    Text(
+        text = title,
+        style = MeowTheme.typography.sectionTitle,
+        fontWeight = FontWeight.SemiBold,
+        color = MeowTheme.colors.onSurface,
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+        text = message,
+        style = MeowTheme.typography.summary,
+        color = MeowTheme.colors.onSurfaceVariant,
+        maxLines = 4,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
+ * MD3E's alert hierarchy: identify the app first, then isolate the actual failure in an
+ * error-toned block. The old `sectionTitle + grey paragraph` treatment read like an ordinary
+ * settings card, especially over another app, so the interruption had no visual anchor.
+ */
+@Composable
+private fun ExpressiveAlertSummary(
+    packageName: String?,
+    label: String?,
+    title: String,
+    exceptionClass: String?,
+    summaryText: String?,
+    unknownMessage: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (packageName == null) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(MeowTheme.colors.errorContainer, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = MeowIcons.Error,
+                    contentDescription = null,
+                    tint = MeowTheme.colors.onErrorContainer,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        } else {
+            AppIcon(
+                packageName = packageName,
+                label = label,
+                size = 48.dp,
+            )
+        }
+        Spacer(Modifier.width(14.dp))
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            style = MeowTheme.typography.pageTitle.copy(
+                fontSize = 22.sp,
+                lineHeight = 27.sp,
+            ),
+            fontWeight = FontWeight.SemiBold,
+            color = MeowTheme.colors.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+
+    Spacer(Modifier.height(18.dp))
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MeowTheme.colors.errorContainer, MeowTheme.shapes.item)
+            .padding(14.dp)
+            .testTag("crashcatcher.alert.summary"),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            imageVector = MeowIcons.Error,
+            contentDescription = null,
+            tint = MeowTheme.colors.onErrorContainer,
+            modifier = Modifier.size(22.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = exceptionClass ?: summaryText ?: unknownMessage,
+                style = MeowTheme.typography.title,
+                fontWeight = FontWeight.SemiBold,
+                color = MeowTheme.colors.onErrorContainer,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (exceptionClass != null && summaryText != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = summaryText,
+                    style = MeowTheme.typography.summary,
+                    color = MeowTheme.colors.onErrorContainer,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 /** Loads the one record an alert is about. */
 internal class CrashAlertViewModel(
     private val crashes: io.github.lingqiqi5211.crashcatcher.domain.repository.CrashRepository,
+    packageName: String? = null,
 ) {
     private val state =
-        kotlinx.coroutines.flow.MutableStateFlow(CrashAlertUiState())
+        kotlinx.coroutines.flow.MutableStateFlow(CrashAlertUiState(packageName = packageName))
     val uiState: kotlinx.coroutines.flow.StateFlow<CrashAlertUiState> = state
 
     suspend fun load(id: RecordId) {
         crashes.getRecord(id).onSuccess { detail ->
-            state.value = CrashAlertUiState(group = detail.group)
+            state.value = CrashAlertUiState(
+                packageName = detail.group.packageName,
+                group = detail.group,
+            )
         }
     }
 }

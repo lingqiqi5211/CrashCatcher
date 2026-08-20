@@ -9,8 +9,8 @@ import org.junit.Test
 /**
  * Whether the per-app page is about an app or a platform process.
  *
- * The route carries only a name, so this is answered twice: from the name's shape while the
- * first row is still loading, and from the daemon's own verdict once one has arrived. Getting the
+ * The route carries identity but no classification, so this is answered twice: from the name's
+ * shape while the first row is still loading, and from the daemon's own verdict once one has arrived. Getting the
  * first answer wrong means the page opens offering to launch a HAL and rearranges itself a moment
  * later.
  */

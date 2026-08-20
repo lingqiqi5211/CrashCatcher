@@ -166,7 +166,7 @@ private fun AppFeed(state: AppsUiState, actions: AppsActions) {
 @Composable
 private fun AppRow(app: AppEntry, onClick: () -> Unit) {
     MeowCard(
-        modifier = Modifier.testTag("crashcatcher.apps.row.${app.packageName}"),
+        modifier = Modifier.testTag("crashcatcher.apps.row.${app.packageName}.${app.userId}"),
         contentPadding = ListRowPadding,
         onClick = onClick,
     ) {
@@ -219,6 +219,12 @@ private fun AppRow(app: AppEntry, onClick: () -> Unit) {
                     // an installed package cannot be a system *app*.
                     originLabel(app)?.let { origin ->
                         StatusTag(text = origin, tone = StatusTagTone.Neutral)
+                    }
+                    if (app.userId != 0) {
+                        StatusTag(
+                            text = stringResource(R.string.app_user, app.userId),
+                            tone = StatusTagTone.Neutral,
+                        )
                     }
                     appOverrideLabel(app)?.let { override ->
                         StatusTag(text = override, tone = StatusTagTone.Neutral)

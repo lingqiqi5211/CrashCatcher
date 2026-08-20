@@ -108,6 +108,7 @@
     <string name="group_first_seen">首次</string>
     <string name="group_last_seen">最近</string>
     <string name="group_user">用户</string>
+    <string name="app_user">用户 %1$d</string>
     <string name="group_pruned">另有 %1$d 次已超出保留上限，仅计入次数</string>
     <string name="record_payload_gone">日志已回收</string>
     <string name="record_payload_absent">无日志正文</string>

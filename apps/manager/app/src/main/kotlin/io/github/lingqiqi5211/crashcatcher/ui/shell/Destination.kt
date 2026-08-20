@@ -68,7 +68,7 @@ internal sealed interface Page {
 
     data class RecordDetail(val id: RecordId) : Page
 
-    data class AppDetail(val packageName: String) : Page
+    data class AppDetail(val packageName: String, val userId: Int) : Page
 
     data object Appearance : Page
 

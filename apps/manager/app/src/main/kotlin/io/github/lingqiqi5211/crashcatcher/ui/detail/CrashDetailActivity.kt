@@ -97,11 +97,14 @@ class CrashDetailActivity : ComponentActivity() {
             }
         }
 
-        showDialog(RecordId(recordId))
+        showDialog(
+            recordId = RecordId(recordId),
+            packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME)?.takeIf { it.isNotBlank() },
+        )
     }
 
-    private fun showDialog(recordId: RecordId) {
-        val viewModel = CrashAlertViewModel(container.crashes)
+    private fun showDialog(recordId: RecordId, packageName: String?) {
+        val viewModel = CrashAlertViewModel(container.crashes, packageName)
         lifecycleScope.launch { viewModel.load(recordId) }
 
         setContent {
@@ -197,6 +200,7 @@ class CrashDetailActivity : ComponentActivity() {
     internal companion object {
         /** Matches the extras the daemon and the bridge already put on their intents. */
         const val EXTRA_RECORD_ID = "record_id"
+        const val EXTRA_PACKAGE_NAME = "package_name"
         const val EXTRA_BRIDGE_ACTION = "bridge_action"
 
         /** Must match `BridgeAction`'s wire names in `cch_wire`. */
