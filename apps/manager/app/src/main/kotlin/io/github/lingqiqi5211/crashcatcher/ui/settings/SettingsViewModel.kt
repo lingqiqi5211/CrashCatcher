@@ -10,6 +10,8 @@ import io.github.lingqiqi5211.crashcatcher.data.daemon.RetentionPatch
 import io.github.lingqiqi5211.crashcatcher.data.daemon.domainError
 import io.github.lingqiqi5211.crashcatcher.data.daemon.toReconnectOutcome
 import io.github.lingqiqi5211.crashcatcher.domain.model.DomainError
+import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorKind
+import io.github.lingqiqi5211.crashcatcher.domain.model.errorOrNull
 import io.github.lingqiqi5211.crashcatcher.domain.model.LoadState
 import io.github.lingqiqi5211.crashcatcher.domain.model.ReconnectOutcome
 import io.github.lingqiqi5211.crashcatcher.domain.model.valueOrNull
@@ -42,8 +44,18 @@ internal data class SettingsUiState(
 ) {
     val value: GlobalConfig? get() = config.valueOrNull
 
-    /** The status where one was read, for pages that treat "unreachable" as a finding. */
-    val moduleStatus: ModuleStatus? get() = moduleStatusState.valueOrNull
+    /**
+     * The status where one was read, for pages that treat "unreachable" as a finding.
+     *
+     * Null once the connection has dropped, even though the last figures are still held. Every
+     * row built from this is a live reading — daemon pid, bridge state, index size — and a
+     * disconnected manager showing them is claiming to know something it no longer does.
+     */
+    val moduleStatus: ModuleStatus?
+        get() = moduleStatusState.valueOrNull.takeIf { daemonReachable }
+
+    val daemonReachable: Boolean
+        get() = moduleStatusState.errorOrNull?.kind != DomainErrorKind.ConnectionLost
 }
 
 internal class SettingsViewModel(

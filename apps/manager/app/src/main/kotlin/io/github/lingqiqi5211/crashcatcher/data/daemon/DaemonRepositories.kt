@@ -15,15 +15,21 @@ import io.github.lingqiqi5211.crashcatcher.domain.repository.ModuleStatusReposit
 import io.github.lingqiqi5211.crashcatcher.domain.repository.RuntimeLogSnapshot
 import io.github.lingqiqi5211.crashcatcher.domain.repository.PayloadChunkResult
 import io.github.lingqiqi5211.crashcatcher.domain.repository.StatsRepository
+import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorKind
+import io.github.lingqiqi5211.crashcatcher.domain.model.valueOrNull
 import java.io.FileInputStream
 import java.io.IOException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * Runs a request and turns any failure into a [DomainError].
@@ -58,10 +64,25 @@ private fun unexpected(response: WireResponse): Nothing =
 
 class DaemonModuleStatusRepository(
     private val client: DaemonClient,
+    scope: CoroutineScope,
 ) : ModuleStatusRepository {
 
     private val state = MutableStateFlow<LoadState<ModuleStatus>>(LoadState.Loading)
-    override val status: StateFlow<LoadState<ModuleStatus>> = state.asStateFlow()
+
+    /**
+     * The last status, marked stale the moment the connection goes.
+     *
+     * The second half is what keeps the overview honest. Nothing polls, so a daemon that dies
+     * while the user is looking at the status card used to leave 运行中 on screen until they
+     * pulled to refresh — even after another page had already failed a read and knew better.
+     */
+    override val status: StateFlow<LoadState<ModuleStatus>> =
+        combine(state, client.connected) { status, connected ->
+            // Only a status that was actually read gets downgraded. Before the first one, and
+            // after a failed one, `state` already says what it is — and the app starts
+            // disconnected, so anything else would open on an error.
+            if (connected || status.valueOrNull == null) status else status.withError(CONNECTION_LOST)
+        }.stateIn(scope, SharingStarted.Eagerly, LoadState.Loading)
 
     override suspend fun refresh() {
         query()
@@ -80,6 +101,13 @@ class DaemonModuleStatusRepository(
         // Keep the card on screen and mark it stale rather than blanking out: a
         // momentary disconnect should not erase what the user was reading.
         .onFailure { state.value = state.value.withError(it.domainError) }
+
+    private companion object {
+        val CONNECTION_LOST = DomainError(
+            kind = DomainErrorKind.ConnectionLost,
+            message = "daemon connection dropped",
+        )
+    }
 }
 
 class DaemonCrashRepository(

@@ -8,6 +8,8 @@ import io.github.lingqiqi5211.crashcatcher.data.daemon.Stats
 import io.github.lingqiqi5211.crashcatcher.data.device.readDeviceInfo
 import io.github.lingqiqi5211.crashcatcher.domain.model.DeviceInfo
 import io.github.lingqiqi5211.crashcatcher.data.daemon.toReconnectOutcome
+import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorKind
+import io.github.lingqiqi5211.crashcatcher.domain.model.errorOrNull
 import io.github.lingqiqi5211.crashcatcher.domain.model.LoadState
 import io.github.lingqiqi5211.crashcatcher.domain.model.ReconnectOutcome
 import io.github.lingqiqi5211.crashcatcher.domain.model.valueOrNull
@@ -56,6 +58,10 @@ internal data class HomeUiState(
     val collectors: List<CollectorHealth>
         get() = moduleStatus.valueOrNull?.collectors.orEmpty()
 
+    /** True once a read has failed on the connection itself, stale figures notwithstanding. */
+    val daemonReachable: Boolean
+        get() = moduleStatus.errorOrNull?.kind != DomainErrorKind.ConnectionLost
+
     val runtimeStatus: RuntimeStatus
         get() = when (val status = moduleStatus.valueOrNull) {
             null -> if (moduleStatus is LoadState.Loading) {
@@ -64,7 +70,11 @@ internal data class HomeUiState(
                 RuntimeStatus.Unreachable
             }
 
-            else -> if (status.collectors.any { it.isImpaired }) {
+            // The figures below are the last ones read, and they stay on screen — but the card
+            // must not go on saying 运行中 about a daemon that has since gone.
+            else -> if (!daemonReachable) {
+                RuntimeStatus.Unreachable
+            } else if (status.collectors.any { it.isImpaired }) {
                 RuntimeStatus.Degraded
             } else {
                 RuntimeStatus.Running

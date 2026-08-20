@@ -43,7 +43,7 @@ internal class AppContainer(context: Context) {
 
     val appearance = AppearancePreferencesRepository(context.applicationContext, applicationScope)
 
-    val moduleStatus = DaemonModuleStatusRepository(client)
+    val moduleStatus = DaemonModuleStatusRepository(client, applicationScope)
     val crashes = DaemonCrashRepository(client)
     val config = DaemonConfigRepository(client)
     val apps = DaemonAppInventoryRepository(client)

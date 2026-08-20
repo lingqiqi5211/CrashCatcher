@@ -3,6 +3,7 @@ package io.github.lingqiqi5211.crashcatcher.data.daemon
 import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorCode
 import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorKind
 import java.io.FileDescriptor
+import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -100,6 +101,47 @@ class DaemonClientTest {
         )
     }
 
+    /**
+     * A broken pipe is what a dropped connection actually looks like from the socket, and it is
+     * not a [DaemonException]. While it slipped past the retry, the dead channel stayed
+     * installed and [DaemonClient.connected] went on saying true — so the overview kept
+     * reporting 运行中 about a daemon that had gone, and nothing but the reconnect button
+     * recovered it.
+     */
+    @Test
+    fun `a broken pipe is a dropped connection like any other`() = runTest {
+        val transport = FakeTransport()
+        transport.script += handshakeReply(seq = 1)
+        transport.script += FakeTransport.BROKEN_PIPE_MARKER
+        transport.script += handshakeReply(seq = 1)
+        transport.script += """{"seq":2,"ok":{"response":"closed"}}"""
+
+        val client = DaemonClient(transport, clientVersion = "0.1.0")
+        val reply = client.request(WireRequest.ClosePayload(handle = 1))
+
+        assertEquals(WireResponse.Closed, reply.response)
+        assertEquals(2, transport.openedLanes.size)
+        assertTrue(client.connected.value)
+    }
+
+    @Test
+    fun `a connection that cannot be re-established is reported as lost`() = runTest {
+        val transport = FakeTransport()
+        transport.script += handshakeReply(seq = 1)
+        transport.script += FakeTransport.BROKEN_PIPE_MARKER
+        // Nothing left to script: the reconnect's handshake fails too, which is the daemon
+        // being genuinely gone rather than restarting.
+
+        val client = DaemonClient(transport, clientVersion = "0.1.0")
+        val failure = runCatching {
+            client.request(WireRequest.ClosePayload(handle = 1))
+        }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        assertEquals(DomainErrorKind.ConnectionLost, failure?.toDomainError()?.kind)
+        assertTrue("a lost connection must not read as connected", !client.connected.value)
+    }
+
     @Test
     fun `a rejection is surfaced rather than retried`() = runTest {
         val transport = FakeTransport()
@@ -185,6 +227,9 @@ private class FakeTransport : DaemonTransport {
                 if (next == CLOSE_MARKER) {
                     throw DaemonException.ConnectionClosed("scripted disconnect")
                 }
+                if (next == BROKEN_PIPE_MARKER) {
+                    throw IOException("Broken pipe")
+                }
                 pending = descriptorsForFrame
                 return next.encodeToByteArray()
             }
@@ -201,5 +246,6 @@ private class FakeTransport : DaemonTransport {
 
     companion object {
         const val CLOSE_MARKER = "<<close>>"
+        const val BROKEN_PIPE_MARKER = "<<broken-pipe>>"
     }
 }

@@ -4,7 +4,12 @@ import io.github.lingqiqi5211.crashcatcher.domain.model.DomainError
 import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorCode
 import io.github.lingqiqi5211.crashcatcher.domain.model.DomainErrorKind
 import java.io.FileDescriptor
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -37,6 +42,18 @@ class DaemonClient(
     private var channel: DaemonChannel? = null
     private var nextSeq = 1L
 
+    private val connectedState = MutableStateFlow(false)
+
+    /**
+     * Whether a channel is up right now.
+     *
+     * Nothing polls the daemon, so without this the only screen that learns it went away is
+     * whichever one happens to ask for something next — the overview goes on saying 运行中 while
+     * the log page two taps away is reporting a failed read. Published from here because this is
+     * the one place that finds out, whoever's request it was.
+     */
+    val connected: StateFlow<Boolean> = connectedState.asStateFlow()
+
     /** Protocol version reported by the daemon, once the handshake has run. */
     var daemonVersion: String? = null
         private set
@@ -60,13 +77,30 @@ class DaemonClient(
         // One transparent reconnect: the daemon restarting between two screens is
         // ordinary, and making every caller handle it would spread the retry
         // everywhere. A rejection is not retried — it would fail identically.
+        //
+        // Any exception, not only `DaemonException`. Writing to a socket whose peer has gone
+        // raises a plain `IOException` (EPIPE, ECONNRESET), and while that was slipping past
+        // this handler the dead channel stayed installed: no reconnect, and the client went on
+        // reporting itself connected, so every later request failed the same way and only the
+        // 重新连接 button could recover it.
         try {
             exchangeLocked(request)
-        } catch (cause: DaemonException) {
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (cause: Exception) {
             if (cause is DaemonException.Rejected) throw cause
             closeLocked()
-            openLocked()
-            exchangeLocked(request)
+            // A failed retry leaves nothing usable behind, so it closes rather than keeping a
+            // channel that only the next caller would discover is dead.
+            try {
+                openLocked()
+                exchangeLocked(request)
+            } catch (retry: CancellationException) {
+                throw retry
+            } catch (retry: Exception) {
+                closeLocked()
+                throw retry
+            }
         }
     }
 
@@ -75,16 +109,21 @@ class DaemonClient(
         channel = opened
         nextSeq = 1
 
-        val reply = exchangeLocked(
-            WireRequest.Handshake(
-                protocolVersion = DaemonConstants.PROTOCOL_VERSION,
-                clientVersion = clientVersion,
-            ),
-        )
-        val handshake = reply.response as? WireResponse.Handshake
-            ?: throw DaemonException.ProtocolViolation(
-                "expected a handshake reply, got ${reply.response::class.simpleName}",
+        val handshake = try {
+            val reply = exchangeLocked(
+                WireRequest.Handshake(
+                    protocolVersion = DaemonConstants.PROTOCOL_VERSION,
+                    clientVersion = clientVersion,
+                ),
             )
+            reply.response as? WireResponse.Handshake
+                ?: throw DaemonException.ProtocolViolation(
+                    "expected a handshake reply, got ${reply.response::class.simpleName}",
+                )
+        } catch (cause: Throwable) {
+            closeLocked()
+            throw cause
+        }
         if (handshake.protocolVersion != DaemonConstants.PROTOCOL_VERSION) {
             closeLocked()
             throw DaemonException.Rejected(
@@ -96,12 +135,14 @@ class DaemonClient(
             )
         }
         daemonVersion = handshake.daemonVersion
+        connectedState.value = true
     }
 
     private fun closeLocked() {
         channel?.close()
         channel = null
         daemonVersion = null
+        connectedState.value = false
     }
 
     private suspend fun exchangeLocked(request: WireRequest): DaemonReply {
@@ -150,7 +191,10 @@ fun Throwable.toDomainError(): DomainError = when (this) {
         code = error.code.toDomainCode(),
     )
 
-    is DaemonException.ConnectionClosed, is DaemonException.Timeout -> DomainError(
+    // `IOException` alongside the two named cases: a broken pipe or a reset from the socket is
+    // a lost connection, and calling it Unknown put "出错了，稍后重试" on screen for the one
+    // failure whose cause is worth naming.
+    is DaemonException.ConnectionClosed, is DaemonException.Timeout, is IOException -> DomainError(
         kind = DomainErrorKind.ConnectionLost,
         message = message ?: "connection lost",
     )
