@@ -14,11 +14,11 @@ use cch_packages::{PackageIndex, is_safe_package_name, is_safe_settings_key};
 use cch_settings::{AndroidSettings, DialogTakeoverStatus as SettingsTakeoverStatus};
 use cch_store::{Inserted, Store};
 use cch_wire::{
-    AppConfigResult, AppEntry, BridgeAction, CollectorHealth, CollectorSource,
+    AppConfigResult, AppEntry, BridgeAction, BridgeFacts, CollectorHealth, CollectorSource,
     DialogTakeoverResult, DialogTakeoverStatus, ErrorCode, Event, ExportFormat, ExportRedaction,
     GlobalConfigResult, MAX_PAYLOAD_CHUNK_BYTES, ModuleStatus, MuteResult, NotificationAction,
-    NotificationSpec, PROTOCOL_VERSION, PayloadChunk, PayloadOpened, Request, RequestEnvelope,
-    Response, ResponseEnvelope, WireError,
+    NotificationSpec, PROTOCOL_VERSION, PackageIndexFacts, PayloadChunk, PayloadOpened, Request,
+    RequestEnvelope, Response, ResponseEnvelope, RuntimeFacts, WireError,
 };
 
 use tracing::warn;
@@ -40,6 +40,26 @@ pub trait DialogSettings: Send + Sync {
     fn status(&self) -> Result<SettingsTakeoverStatus, String>;
     fn set_enabled(&self, enabled: bool) -> Result<SettingsTakeoverStatus, String>;
     fn dropbox_tag_enabled(&self, tag: &str) -> Result<bool, String>;
+}
+
+/// Runtime control over how much the daemon writes to its log.
+///
+/// A trait rather than a `tracing` handle in the core: the handle's type carries the whole
+/// subscriber stack as generics, and this way the host tests — where no subscriber is installed
+/// at all — can pass something inert.
+pub trait LogLevelControl: Send + Sync {
+    fn set_debug(&self, debug: bool);
+}
+
+/// Facts about this process, supplied by whoever starts it.
+///
+/// Grouped rather than added to an already long constructor, and kept out of the core's own
+/// discovery: the daemon runs as a child of `service.sh`, which is what actually knows where the
+/// state lives, and a test wants to point it somewhere else.
+pub struct DaemonRuntime {
+    pub state_dir: std::path::PathBuf,
+    pub android_sdk: u32,
+    pub log_control: Arc<dyn LogLevelControl>,
 }
 
 pub struct RuntimeDialogSettings {
@@ -89,6 +109,9 @@ pub struct DaemonCore {
     volatile_mutes: Mutex<HashMap<String, MuteScope>>,
     /// When the package index was last reloaded, for [`Self::begin_package_reload`].
     last_package_reload_ms: Mutex<i64>,
+    state_dir: std::path::PathBuf,
+    android_sdk: u32,
+    log_control: Arc<dyn LogLevelControl>,
 }
 
 impl DaemonCore {
@@ -99,6 +122,7 @@ impl DaemonCore {
         packages: PackageIndex,
         dialog_settings: Arc<dyn DialogSettings>,
         bridge: Arc<BridgeBroker>,
+        runtime: DaemonRuntime,
     ) -> Arc<Self> {
         let collectors = CollectorSource::ALL
             .into_iter()
@@ -131,7 +155,20 @@ impl DaemonCore {
             // while the daemon was down still needs the very first connection to be
             // able to trigger a reload.
             last_package_reload_ms: Mutex::new(0),
+            state_dir: runtime.state_dir,
+            android_sdk: runtime.android_sdk,
+            log_control: runtime.log_control,
         })
+    }
+
+    /// Puts the stored logging level into effect, for start-up.
+    ///
+    /// The switch is persisted, so a daemon that restarts while someone is reproducing something
+    /// has to come back at the level they chose rather than reverting to info.
+    pub fn apply_log_level(&self) -> Result<(), WireError> {
+        let config = self.load_config()?;
+        self.log_control.set_debug(config.global.debug_logging);
+        Ok(())
     }
 
     #[must_use]
@@ -543,6 +580,10 @@ impl DaemonCore {
                 let stored = self.update_config(|document| {
                     document.global = patch.apply(&document.global);
                 })?;
+                // Takes effect on this process immediately: the point of the switch is to
+                // capture something that is happening now, and asking for a restart first would
+                // lose whatever prompted it.
+                self.log_control.set_debug(stored.global.debug_logging);
                 self.events.broadcast(Event::ConfigChanged);
                 Ok(Response::GlobalConfig {
                     result: Box::new(GlobalConfigResult {
@@ -611,6 +652,19 @@ impl DaemonCore {
                     .len() as u64;
                 Ok(Response::Stats {
                     stats: Box::new(stats),
+                })
+            }
+            Request::ReadRuntimeLog { max_bytes } => {
+                let budget = if max_bytes == 0 {
+                    crate::diagnostics::DEFAULT_LOG_BYTES
+                } else {
+                    max_bytes
+                };
+                let log = crate::diagnostics::read_runtime_log(&self.state_dir, budget);
+                Ok(Response::RuntimeLog {
+                    text: log.text,
+                    truncated: log.truncated,
+                    total_bytes: log.total_bytes,
                 })
             }
             Request::ReopenApp {
@@ -716,6 +770,48 @@ impl DaemonCore {
                 .store
                 .storage_status()
                 .map_err(|error| error.to_wire())?,
+            runtime: self.runtime_facts(&config)?,
+        })
+    }
+
+    /// The facts a diagnostics page needs that nothing else reports.
+    fn runtime_facts(&self, config: &ConfigDocument) -> Result<RuntimeFacts, WireError> {
+        let packages = self
+            .packages
+            .read()
+            .map_err(|_| WireError::internal("package index lock poisoned"))?;
+        let hello = self.bridge.hello();
+        let active_mutes = self
+            .volatile_mutes
+            .lock()
+            .map(|mutes| mutes.len())
+            .unwrap_or(0)
+            .max(
+                config
+                    .apps
+                    .values()
+                    .filter(|app| app.mute != MuteScope::None)
+                    .count(),
+            );
+
+        Ok(RuntimeFacts {
+            pid: std::process::id(),
+            // Compile-time: this is the binary that is running, not what the device prefers.
+            abi: std::env::consts::ARCH.to_owned(),
+            android_sdk: self.android_sdk,
+            selinux: read_selinux_mode(),
+            store_schema_version: cch_store::SCHEMA_VERSION,
+            debug_logging: config.global.debug_logging,
+            package_index: PackageIndexFacts {
+                package_count: u32::try_from(packages.entries().len()).unwrap_or(u32::MAX),
+                system_flags_known: packages.system_flags_known(),
+            },
+            bridge: BridgeFacts {
+                connected: self.bridge.is_connected(),
+                version: hello.as_ref().map(|hello| hello.bridge_version.clone()),
+                android_sdk: hello.as_ref().map(|hello| hello.android_sdk),
+            },
+            active_mutes: u32::try_from(active_mutes).unwrap_or(u32::MAX),
         })
     }
 
@@ -987,6 +1083,22 @@ impl DaemonCore {
                 let _ = self.bridge.post_notification(notification);
             }
         }
+    }
+}
+
+/// SELinux's current mode, or `unknown` where it cannot be read.
+///
+/// Worth reporting because several things here behave differently under enforcing — descriptor
+/// passing to the manager most visibly — and "it works on my permissive device" is otherwise
+/// indistinguishable from "it works".
+fn read_selinux_mode() -> String {
+    match std::fs::read_to_string("/sys/fs/selinux/enforce") {
+        Ok(value) => match value.trim() {
+            "1" => "enforcing".to_owned(),
+            "0" => "permissive".to_owned(),
+            other => format!("unknown({other})"),
+        },
+        Err(_) => "unknown".to_owned(),
     }
 }
 
@@ -1271,8 +1383,29 @@ mod tests {
             packages,
             Arc::new(FakeSettings),
             BridgeBroker::new(),
+            test_runtime(directory.path()),
         );
         (directory, core)
+    }
+
+    /// Records what it was asked for, so a test can check the switch actually reached something.
+    #[derive(Default)]
+    struct RecordedLevel(Mutex<Vec<bool>>);
+
+    impl LogLevelControl for RecordedLevel {
+        fn set_debug(&self, debug: bool) {
+            if let Ok(mut calls) = self.0.lock() {
+                calls.push(debug);
+            }
+        }
+    }
+
+    fn test_runtime(state_dir: &std::path::Path) -> DaemonRuntime {
+        DaemonRuntime {
+            state_dir: state_dir.to_path_buf(),
+            android_sdk: 34,
+            log_control: Arc::new(RecordedLevel::default()),
+        }
     }
 
     /// An index holding one ordinary app, in `packages.list` shape.
@@ -1399,6 +1532,72 @@ mod tests {
             .expect("stored");
         assert!(inserted.group.package_installed);
         assert!(!inserted.group.is_system_app, "not under /system");
+    }
+
+    /// The debug switch has to reach the running process. Persisting it and waiting for a
+    /// restart would lose whatever the user turned it on to capture.
+    #[test]
+    fn turning_on_debug_logging_takes_effect_immediately() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(Store::open_in_memory(directory.path()).expect("store"));
+        let recorded = Arc::new(RecordedLevel::default());
+        let core = DaemonCore::new(
+            store,
+            ConfigStore::new(directory.path().join("config.json")),
+            PackageIndex::default(),
+            Arc::new(FakeSettings),
+            BridgeBroker::new(),
+            DaemonRuntime {
+                state_dir: directory.path().to_path_buf(),
+                android_sdk: 34,
+                log_control: Arc::clone(&recorded) as Arc<dyn LogLevelControl>,
+            },
+        );
+
+        let response = core.dispatch(RequestEnvelope {
+            seq: 1,
+            request: Request::SetGlobalConfig {
+                patch: cch_config::GlobalConfigPatch {
+                    debug_logging: Some(true),
+                    ..Default::default()
+                },
+            },
+        });
+        assert!(response.err.is_none(), "{:?}", response.err);
+        assert_eq!(recorded.0.lock().expect("calls").as_slice(), &[true]);
+
+        // And a restart has to come back at the level that was chosen, not at info.
+        core.apply_log_level().expect("applies");
+        assert_eq!(recorded.0.lock().expect("calls").as_slice(), &[true, true]);
+    }
+
+    /// The status is what a diagnostics page reads; these are the fields that say why something
+    /// is not working rather than that it is not.
+    #[test]
+    fn the_status_reports_what_a_diagnosis_needs() {
+        let (_directory, core) = core_with_packages(one_app_index());
+
+        let response = core.dispatch(RequestEnvelope {
+            seq: 1,
+            request: Request::ModuleStatus,
+        });
+        let Some(cch_wire::Response::ModuleStatus { status }) = response.ok else {
+            panic!("expected a status, got {:?}", response);
+        };
+
+        assert_eq!(status.runtime.android_sdk, 34);
+        assert_eq!(status.runtime.pid, std::process::id());
+        assert_eq!(status.runtime.package_index.package_count, 1);
+        assert!(
+            !status.runtime.package_index.system_flags_known,
+            "built without PackageManager, and the page has to be able to say so"
+        );
+        assert!(!status.runtime.bridge.connected);
+        assert_eq!(
+            status.runtime.store_schema_version,
+            cch_store::SCHEMA_VERSION
+        );
+        assert!(!status.runtime.debug_logging);
     }
 
     /// Per-app settings have to work for a platform process too — it is the thing most worth

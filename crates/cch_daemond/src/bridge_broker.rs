@@ -22,6 +22,9 @@ pub struct BridgeBroker {
     command_sender: Mutex<Option<Sender<BridgeCommand>>>,
     pending: Mutex<HashMap<u64, Sender<BridgeEvent>>>,
     package_cache: Mutex<HashMap<(String, i32), BridgePackageInfo>>,
+    /// The bridge's own hello, kept for diagnostics: its version and the SDK it sees are a
+    /// second process's view of the same device, and a stale dex shows up here first.
+    hello: Mutex<Option<cch_wire::BridgeHello>>,
 }
 
 impl Default for BridgeBroker {
@@ -32,6 +35,7 @@ impl Default for BridgeBroker {
             command_sender: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             package_cache: Mutex::new(HashMap::new()),
+            hello: Mutex::new(None),
         }
     }
 }
@@ -45,6 +49,15 @@ impl BridgeBroker {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
+    }
+
+    /// What the bridge said about itself when it connected, for the diagnostics page.
+    ///
+    /// Kept after a disconnect on purpose: "it was here, running this version" is more useful
+    /// than nothing when the question is why it went away.
+    #[must_use]
+    pub fn hello(&self) -> Option<cch_wire::BridgeHello> {
+        self.hello.lock().ok().and_then(|hello| hello.clone())
     }
 
     pub fn attach(&self) -> Result<Receiver<BridgeCommand>, WireError> {
@@ -70,8 +83,11 @@ impl BridgeBroker {
 
     pub fn handle_event(&self, event: BridgeEvent) {
         match &event {
-            BridgeEvent::Hello { .. } => {
+            BridgeEvent::Hello { hello } => {
                 self.connected.store(true, Ordering::Release);
+                if let Ok(mut stored) = self.hello.lock() {
+                    *stored = Some(hello.clone());
+                }
             }
             BridgeEvent::PackageInfoResult {
                 request_id,

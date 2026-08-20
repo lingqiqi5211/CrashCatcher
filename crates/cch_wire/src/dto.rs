@@ -136,6 +136,54 @@ pub struct ModuleStatus {
     pub bridge_connected: bool,
     pub dialog_takeover: DialogTakeoverStatus,
     pub storage: StorageStatus,
+    pub runtime: RuntimeFacts,
+}
+
+/// What the daemon can say about its own health, for someone working out why something is not
+/// working.
+///
+/// Gathered into one answer rather than spread over several requests because the useful reading
+/// is the whole chain at one instant: a collector that never fired, a bridge that never
+/// connected and a package index that never completed produce the same symptom — "it is not
+/// recording" — and are told apart only by looking at all three at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFacts {
+    pub pid: u32,
+    /// The ABI this daemon was built for, which is not necessarily the one the device prefers.
+    pub abi: String,
+    /// The SDK level the daemon read, which is what its platform-specific paths key off.
+    pub android_sdk: u32,
+    /// `enforcing`, `permissive`, or `unknown` where it could not be read. Descriptor passing
+    /// and several collector paths behave differently under enforcing, so it belongs in a
+    /// report about why something did not arrive.
+    pub selinux: String,
+    pub store_schema_version: i64,
+    /// Whether the daemon is currently logging at debug level.
+    pub debug_logging: bool,
+    pub package_index: PackageIndexFacts,
+    pub bridge: BridgeFacts,
+    /// Apps silenced right now, which is the first thing to check when notifications stopped.
+    pub active_mutes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageIndexFacts {
+    pub package_count: u32,
+    /// Whether the system-app flags came from PackageManager.
+    ///
+    /// False means the index was built before it was answering — the normal state for the first
+    /// seconds after boot — and while it holds, every app looks third-party and the
+    /// "record system apps" setting appears to do nothing.
+    pub system_flags_known: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgeFacts {
+    pub connected: bool,
+    /// From the bridge's own hello, so a mismatch with the daemon means a stale dex.
+    pub version: Option<String>,
+    /// The SDK the bridge sees, which is a different process's view of the same device.
+    pub android_sdk: Option<u32>,
 }
 
 /// An installed app, with how much it has crashed.

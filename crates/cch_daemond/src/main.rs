@@ -4,18 +4,21 @@ use cch_auth::ManagerPin;
 use cch_bridge_supervisor::{BridgeProcessSpec, BridgeSupervisor, RestartPolicy};
 use cch_config::{CONFIG_FILE_NAME, ConfigStore};
 use cch_daemond::{
-    BridgeBroker, DaemonCore, DaemonServers, PackageIndexError, RuntimeDialogSettings, ServerError,
-    load_package_index, start_collectors,
+    BridgeBroker, DaemonCore, DaemonRuntime, DaemonServers, LogLevelControl, PackageIndexError,
+    RuntimeDialogSettings, ServerError, load_package_index, start_collectors,
 };
 use cch_store::Store;
 use cch_wire::BRIDGE_SOCKET_NAME;
 use thiserror::Error;
 use tracing::{info, warn};
+use tracing_subscriber::{
+    filter::LevelFilter, layer::SubscriberExt, registry::Registry, reload, util::SubscriberInitExt,
+};
 
 const MANAGER_PACKAGE: &str = "io.github.lingqiqi5211.crashcatcher";
 
 fn main() -> Result<(), MainError> {
-    tracing_subscriber::fmt().with_ansi(false).init();
+    let log_control = install_logging();
     let arguments = Arguments::parse(env::args().skip(1))?;
     fs::create_dir_all(&arguments.state_dir)?;
     let store = Arc::new(Store::open(arguments.state_dir.join("store"))?);
@@ -30,7 +33,15 @@ fn main() -> Result<(), MainError> {
         packages,
         Arc::new(RuntimeDialogSettings::new(android_sdk)),
         bridge,
+        DaemonRuntime {
+            state_dir: arguments.state_dir.clone(),
+            android_sdk,
+            log_control,
+        },
     );
+    if let Err(error) = core.apply_log_level() {
+        warn!(%error, "could not apply the stored logging level");
+    }
     core.clear_volatile_mutes().map_err(MainError::Wire)?;
     complete_package_index(Arc::clone(&core));
 
@@ -50,6 +61,36 @@ fn main() -> Result<(), MainError> {
     info!(sdk = android_sdk, "crashcatcher daemon ready");
     servers.wait()?;
     Ok(())
+}
+
+/// Installs the log subscriber and returns the handle that can change its level later.
+///
+/// A reload layer rather than a fixed filter: the debug switch exists to capture something that
+/// is happening now, and a level that only took effect on restart would lose it.
+fn install_logging() -> Arc<dyn LogLevelControl> {
+    let (filter, handle) = reload::Layer::new(LevelFilter::INFO);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_ansi(false))
+        .init();
+    Arc::new(ReloadableLevel(handle))
+}
+
+struct ReloadableLevel(reload::Handle<LevelFilter, Registry>);
+
+impl LogLevelControl for ReloadableLevel {
+    fn set_debug(&self, debug: bool) {
+        let level = if debug {
+            LevelFilter::DEBUG
+        } else {
+            LevelFilter::INFO
+        };
+        // Failure here means the subscriber is gone, which cannot happen while this process is
+        // running — and a log level is not worth taking the daemon down over either way.
+        if self.0.modify(|current| *current = level).is_err() {
+            warn!("could not change the log level");
+        }
+    }
 }
 
 /// Rebuilds the package index once PackageManager is answering.

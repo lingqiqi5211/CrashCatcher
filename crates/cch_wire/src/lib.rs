@@ -28,11 +28,11 @@ pub use bridge::{
     NotificationAction, NotificationSpec,
 };
 pub use dto::{
-    AppConfigResult, AppEntry, CollectorHealth, CollectorSource, DeleteTarget,
+    AppConfigResult, AppEntry, BridgeFacts, CollectorHealth, CollectorSource, DeleteTarget,
     DialogTakeoverResult, DialogTakeoverStatus, ExceptionCount, ExportFormat, ExportRedaction,
     GlobalConfigResult, GroupSummary, KindCount, MAX_PAYLOAD_CHUNK_BYTES, ModuleStatus, MuteResult,
-    PackageCount, PayloadChunk, PayloadOpened, RecordDetail, RecordSummary, Stats, StorageStatus,
-    TrendBucket,
+    PackageCount, PackageIndexFacts, PayloadChunk, PayloadOpened, RecordDetail, RecordSummary,
+    RuntimeFacts, Stats, StorageStatus, TrendBucket,
 };
 pub use error::{ErrorCode, WireError};
 pub use event::Event;

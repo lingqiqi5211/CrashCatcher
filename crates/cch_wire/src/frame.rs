@@ -37,7 +37,10 @@ pub const MAX_FRAME_BODY_BYTES: usize = 1024 * 1024;
 ///    `GroupSummary` and `AppEntry`, and the platform-process filter on `list_apps`: the daemon
 ///    now tells apps and platform processes apart, and a manager that cannot read that would
 ///    present `/vendor/bin/hw/…` as an app and offer to launch it.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: `read_runtime_log`, `RuntimeFacts` on the status, and `debug_logging` in the config — the
+///    diagnostics page. A manager without them cannot ask why anything is failing, which is the
+///    one screen that has to work when the rest does not.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Which lane a connection is, decided by its very first frame.
 ///

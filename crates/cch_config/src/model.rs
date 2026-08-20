@@ -130,6 +130,12 @@ pub struct GlobalConfig {
     /// had pressed "force quit", and an ANR kills the app outright instead of
     /// offering "wait".
     pub takeover_system_dialog: bool,
+    /// Log at debug level instead of info.
+    ///
+    /// Off by default and meant to be turned on only while reproducing something: the daemon
+    /// writes to a file nothing rotates, and the interesting paths — every screen event, every
+    /// package lookup — are exactly the ones that fire constantly.
+    pub debug_logging: bool,
     pub retention: RetentionPolicy,
 }
 
@@ -148,6 +154,7 @@ impl Default for GlobalConfig {
             only_main_process: false,
             include_system_apps: false,
             takeover_system_dialog: false,
+            debug_logging: false,
             retention: RetentionPolicy::default(),
         }
     }

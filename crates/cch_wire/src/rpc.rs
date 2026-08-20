@@ -118,6 +118,14 @@ pub enum Request {
     SetDialogTakeover {
         enabled: bool,
     },
+    /// The tail of the daemon's own logs.
+    ///
+    /// Its own request rather than part of the status: the status is polled to draw a screen,
+    /// and this can be hundreds of kilobytes that nobody wants until they go looking.
+    ReadRuntimeLog {
+        #[serde(default)]
+        max_bytes: u64,
+    },
 }
 
 impl Request {
@@ -214,6 +222,13 @@ pub enum Response {
     },
     DialogTakeover {
         result: DialogTakeoverResult,
+    },
+    RuntimeLog {
+        text: String,
+        /// Whether anything was cut from the front to fit.
+        truncated: bool,
+        /// What the logs weigh on disk, so a reader can see the tail is a tail.
+        total_bytes: u64,
     },
 }
 

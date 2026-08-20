@@ -61,6 +61,7 @@ pub struct GlobalConfigPatch {
     pub only_main_process: Option<bool>,
     pub include_system_apps: Option<bool>,
     pub takeover_system_dialog: Option<bool>,
+    pub debug_logging: Option<bool>,
     pub retention: RetentionPatch,
 }
 
@@ -79,6 +80,7 @@ impl GlobalConfigPatch {
             && self.only_main_process.is_none()
             && self.include_system_apps.is_none()
             && self.takeover_system_dialog.is_none()
+            && self.debug_logging.is_none()
             && self.retention.is_empty()
     }
 
@@ -103,6 +105,7 @@ impl GlobalConfigPatch {
             takeover_system_dialog: self
                 .takeover_system_dialog
                 .unwrap_or(base.takeover_system_dialog),
+            debug_logging: self.debug_logging.unwrap_or(base.debug_logging),
             retention: self.retention.apply(base.retention),
         }
     }
