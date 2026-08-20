@@ -1,3 +1,38 @@
+# 0.3.0
+
+- 管理器改为监听、模块主动连接，解决部分 ROM 在 SELinux enforcing 下拒绝应用连接 root socket 的问题；两侧仍互相校验身份
+
+- 未连接时也会保留管理器端的监听、peer 和握手诊断，并随诊断报告一并导出
+
+- daemon 重启留下旧连接时首次请求会自动恢复，工作资料与多用户安装也能正确鉴权
+
+- logd 断流后自动重连，Tombstone 等待写入完成后再解析，避免采集状态长期卡在读取受阻
+
+- 模块与管理器协议升至 5，必须同时更新
+
+- build: release 0.3.0
+- manager: clarify paired-version recovery
+- manager: include connection diagnostics in reports
+- manager: accept authenticated daemon connections
+- daemon: authenticate managers from secondary users
+- daemon: wait for tombstones to finish writing
+- logd: reconnect collectors after log streams close
+- build: preserve the MSVC path in the cargo wrapper
+- manager: give the runtime log its own page, with a file switcher
+- module: read one named log file out of the set, and bump the protocol
+- manager: notice a dropped connection instead of waiting to be asked
+- daemon: own the log file so it can be rotated by size
+- logd: carry the raw bytes of an entry that failed to parse
+- bridge: report the release version, not a hardcoded one
+- manager: a diagnostics page that works when nothing else does
+- daemon: answer why it is not working, not just that it is not
+- chore: warn that 0.2.0 needs both halves replaced
+- manager: show the protocol version without needing a connection
+- daemon: report the release version, not the crate's own
+- daemon: refuse to serve a manager that has not agreed on a protocol
+- ci: keep tags out of the channel
+- chore: update.json and changelog for v0.2.0
+
 # 0.2.0
 
 - 「包含系统应用」现在真的生效:系统应用改为直接问 PackageManager 判定,不再按 APK 所在分区猜——漏掉 /system_ext 正是它此前看起来没反应的原因
