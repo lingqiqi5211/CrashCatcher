@@ -32,7 +32,7 @@ import java.nio.charset.StandardCharsets;
 
 public final class CrashCatcherBridge {
     private static final String TAG = "CrashCatcherBridge";
-    private static final String VERSION = "0.1.0";
+    private static final String VERSION = BridgeVersion.VALUE;
     private static final String CHANNEL_ID = "crashcatcher_crashes";
     private static final int MAX_FRAME_BYTES = 1024 * 1024;
     private static final int SYSTEM_UID = 1000;
