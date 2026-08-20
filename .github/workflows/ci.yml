@@ -44,6 +44,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check the release tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version=//p' version.properties)
+          expected="v$version"
+          if [ -z "$version" ] || [ "$TAG" != "$expected" ]; then
+            echo "::error::tag $TAG does not match version.properties ($expected)"
+            exit 1
+          fi
+
       # Which range to look at.
       #
       # The whole push, not its tip. A push carrying "fix the daemon" then "tweak a screen"
