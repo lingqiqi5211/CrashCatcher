@@ -37,6 +37,7 @@ internal data class RuntimeLogUiState(
  */
 internal class DiagnosticsViewModel(
     private val config: ConfigRepository,
+    private val managerLogs: suspend () -> Map<String, String> = { emptyMap() },
 ) : ViewModel() {
 
     private val state = MutableStateFlow(RuntimeLogUiState())
@@ -91,6 +92,9 @@ internal class DiagnosticsViewModel(
                 entries[file.name] = log.text
             }
         }
+        // Read this last. If a daemon log request above discovers that the connection has gone,
+        // the failure it just wrote must be included in this same archive, not only the next one.
+        entries.putAll(managerLogs())
         return entries
     }
 }

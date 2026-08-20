@@ -10,7 +10,9 @@ import io.github.lingqiqi5211.crashcatcher.data.daemon.DaemonConfigRepository
 import io.github.lingqiqi5211.crashcatcher.data.daemon.DaemonCrashRepository
 import io.github.lingqiqi5211.crashcatcher.data.daemon.DaemonModuleStatusRepository
 import io.github.lingqiqi5211.crashcatcher.data.daemon.DaemonStatsRepository
+import io.github.lingqiqi5211.crashcatcher.data.daemon.LogcatDaemonTrace
 import io.github.lingqiqi5211.crashcatcher.data.daemon.LocalSocketTransport
+import io.github.lingqiqi5211.crashcatcher.data.daemon.ManagerTraceStore
 import io.github.lingqiqi5211.crashcatcher.data.preferences.AppearancePreferencesRepository
 import io.github.lingqiqi5211.crashcatcher.ui.apps.AppDetailViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.apps.AppsViewModel
@@ -20,9 +22,11 @@ import io.github.lingqiqi5211.crashcatcher.ui.crashes.RecordDetailViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.home.HomeViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.settings.DiagnosticsViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsViewModel
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 
 /**
  * Hand-built dependency container.
@@ -36,9 +40,22 @@ internal class AppContainer(context: Context) {
     /** Outlives any screen; owns the flows repositories keep hot. */
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    // Kept in every build: when the daemon never connects, its logs cannot be requested, so this
+    // local listener/peer/handshake trace is the only evidence a user can put in a report.
+    private val managerTrace = ManagerTraceStore(
+        File(context.applicationContext.filesDir, "diagnostics"),
+    )
+
+    private val daemonTrace = if (BuildConfig.DEBUG) {
+        LogcatDaemonTrace(managerTrace)
+    } else {
+        managerTrace
+    }
+
     private val client = DaemonClient(
-        transport = LocalSocketTransport(),
+        transport = LocalSocketTransport(trace = daemonTrace),
         clientVersion = BuildConfig.VERSION_NAME,
+        trace = daemonTrace,
     )
 
     val appearance = AppearancePreferencesRepository(context.applicationContext, applicationScope)
@@ -48,6 +65,10 @@ internal class AppContainer(context: Context) {
     val config = DaemonConfigRepository(client)
     val apps = DaemonAppInventoryRepository(client)
     val stats = DaemonStatsRepository(client)
+
+    suspend fun readManagerLogs(): Map<String, String> = withContext(Dispatchers.IO) {
+        managerTrace.readAll()
+    }
 }
 
 /**
@@ -99,6 +120,7 @@ internal class AppViewModelFactory(
 
         DiagnosticsViewModel::class.java -> DiagnosticsViewModel(
             config = container.config,
+            managerLogs = container::readManagerLogs,
         )
 
         else -> error("no factory for ${modelClass.name}")
