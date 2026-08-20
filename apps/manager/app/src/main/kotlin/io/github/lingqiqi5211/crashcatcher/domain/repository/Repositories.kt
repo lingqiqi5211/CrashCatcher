@@ -4,6 +4,7 @@ import io.github.lingqiqi5211.crashcatcher.data.daemon.AppConfig
 import io.github.lingqiqi5211.crashcatcher.data.daemon.AppConfigPatch
 import io.github.lingqiqi5211.crashcatcher.data.daemon.AppEntry
 import io.github.lingqiqi5211.crashcatcher.data.daemon.CrashFilter
+import io.github.lingqiqi5211.crashcatcher.data.daemon.RuntimeLogFile
 import io.github.lingqiqi5211.crashcatcher.data.daemon.Cursor
 import io.github.lingqiqi5211.crashcatcher.data.daemon.DeleteTarget
 import io.github.lingqiqi5211.crashcatcher.data.daemon.ExportFormat
@@ -156,20 +157,22 @@ interface ConfigRepository {
     suspend fun mute(packageName: String, scope: MuteScope): Result<Unit>
 
     /**
-     * The tail of the daemon's own logs.
+     * The tail of one of the daemon's log files, plus a listing of the rest.
      *
-     * On the config repository because it is read for the same reason the settings are — someone
-     * is working out why the module is not behaving — and it is the one answer that stays useful
-     * when the rest of the app is showing errors.
+     * On the config repository because it is read for the same reason the settings are: someone
+     * is working out why the module is not behaving.
      */
-    suspend fun runtimeLog(maxBytes: Long = 0): Result<RuntimeLogSnapshot>
+    suspend fun runtimeLog(name: String? = null, maxBytes: Long = 0): Result<RuntimeLogSnapshot>
 }
 
 data class RuntimeLogSnapshot(
+    /** Which file this is, matching one of [files]. */
+    val name: String,
     val text: String,
     /** Something was cut from the front; what is shown is the end. */
     val truncated: Boolean,
     val totalBytes: Long,
+    val files: List<RuntimeLogFile> = emptyList(),
 )
 
 data class GlobalConfigUpdate(val config: GlobalConfig, val adjusted: Boolean)

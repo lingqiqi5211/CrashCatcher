@@ -269,7 +269,10 @@ sealed class WireRequest {
      */
     @Serializable
     @SerialName("read_runtime_log")
-    data class ReadRuntimeLog(val maxBytes: Long = 0) : WireRequest()
+    data class ReadRuntimeLog(
+        val name: String? = null,
+        val maxBytes: Long = 0,
+    ) : WireRequest()
 }
 
 /**
@@ -369,11 +372,15 @@ sealed class WireResponse {
     @Serializable
     @SerialName("runtime_log")
     data class RuntimeLog(
+        /** Which file this is, matching one of [files]. */
+        val name: String,
         val text: String,
         /** Whether anything was cut from the front to fit. */
         val truncated: Boolean,
-        /** What the logs weigh on disk, so a reader can see the tail is a tail. */
+        /** What this file weighs on disk, so a reader can see the tail is a tail. */
         val totalBytes: Long,
+        /** Everything available, newest first. */
+        val files: List<RuntimeLogFile> = emptyList(),
     ) : WireResponse()
 }
 

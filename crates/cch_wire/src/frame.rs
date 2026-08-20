@@ -40,7 +40,10 @@ pub const MAX_FRAME_BODY_BYTES: usize = 1024 * 1024;
 /// 3: `read_runtime_log`, `RuntimeFacts` on the status, and `debug_logging` in the config — the
 ///    diagnostics page. A manager without them cannot ask why anything is failing, which is the
 ///    one screen that has to work when the rest does not.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4: log rotation. `read_runtime_log` takes a file name and answers with the listing, so a
+///    manager that only knows version 3 would show one of up to eighteen files with no way to
+///    reach the rest.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Which lane a connection is, decided by its very first frame.
 ///

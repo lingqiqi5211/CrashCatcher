@@ -358,13 +358,15 @@ class DaemonConfigRepository(
             if (response !is WireResponse.Muted) unexpected(response)
         }
 
-    override suspend fun runtimeLog(maxBytes: Long) = client
-        .ask(WireRequest.ReadRuntimeLog(maxBytes)) { response ->
+    override suspend fun runtimeLog(name: String?, maxBytes: Long) = client
+        .ask(WireRequest.ReadRuntimeLog(name, maxBytes)) { response ->
             val log = response as? WireResponse.RuntimeLog ?: unexpected(response)
             RuntimeLogSnapshot(
+                name = log.name,
                 text = log.text,
                 truncated = log.truncated,
                 totalBytes = log.totalBytes,
+                files = log.files,
             )
         }
 }

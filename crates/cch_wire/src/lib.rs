@@ -32,7 +32,7 @@ pub use dto::{
     DialogTakeoverResult, DialogTakeoverStatus, ExceptionCount, ExportFormat, ExportRedaction,
     GlobalConfigResult, GroupSummary, KindCount, MAX_PAYLOAD_CHUNK_BYTES, ModuleStatus, MuteResult,
     PackageCount, PackageIndexFacts, PayloadChunk, PayloadOpened, RecordDetail, RecordSummary,
-    RuntimeFacts, Stats, StorageStatus, TrendBucket,
+    RuntimeFacts, RuntimeLogFile, Stats, StorageStatus, TrendBucket,
 };
 pub use error::{ErrorCode, WireError};
 pub use event::Event;

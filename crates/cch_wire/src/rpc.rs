@@ -7,7 +7,7 @@ use crate::{
     dto::{
         AppConfigResult, AppEntry, DeleteTarget, DialogTakeoverResult, ExportFormat,
         ExportRedaction, GlobalConfigResult, GroupSummary, ModuleStatus, MuteResult, PayloadChunk,
-        PayloadOpened, RecordDetail, RecordSummary, Stats,
+        PayloadOpened, RecordDetail, RecordSummary, RuntimeLogFile, Stats,
     },
 };
 
@@ -118,11 +118,14 @@ pub enum Request {
     SetDialogTakeover {
         enabled: bool,
     },
-    /// The tail of the daemon's own logs.
+    /// The tail of one of the daemon's log files, and a listing of the rest.
     ///
-    /// Its own request rather than part of the status: the status is polled to draw a screen,
-    /// and this can be hundreds of kilobytes that nobody wants until they go looking.
+    /// Separate from the status, which is polled to draw a screen: this can be hundreds of
+    /// kilobytes that nobody wants until they go looking. `name` comes from a previous
+    /// [`Response::RuntimeLog`]; absent or unknown reads the newest file.
     ReadRuntimeLog {
+        #[serde(default)]
+        name: Option<String>,
         #[serde(default)]
         max_bytes: u64,
     },
@@ -224,11 +227,16 @@ pub enum Response {
         result: DialogTakeoverResult,
     },
     RuntimeLog {
+        /// Which file this is, matching one of `files`.
+        name: String,
         text: String,
         /// Whether anything was cut from the front to fit.
         truncated: bool,
-        /// What the logs weigh on disk, so a reader can see the tail is a tail.
+        /// What this file weighs on disk, so a reader can see the tail is a tail.
         total_bytes: u64,
+        /// Everything available, newest first. Travels with the content so switching files does
+        /// not need a second round trip.
+        files: Vec<RuntimeLogFile>,
     },
 }
 

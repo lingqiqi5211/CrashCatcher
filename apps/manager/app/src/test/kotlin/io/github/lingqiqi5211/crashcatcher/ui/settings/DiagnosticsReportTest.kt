@@ -3,6 +3,7 @@ package io.github.lingqiqi5211.crashcatcher.ui.settings
 import io.github.lingqiqi5211.crashcatcher.data.daemon.BridgeFacts
 import io.github.lingqiqi5211.crashcatcher.data.daemon.CollectorHealth
 import io.github.lingqiqi5211.crashcatcher.data.daemon.CollectorSource
+import io.github.lingqiqi5211.crashcatcher.data.daemon.DaemonConstants
 import io.github.lingqiqi5211.crashcatcher.data.daemon.DialogTakeoverStatus
 import io.github.lingqiqi5211.crashcatcher.data.daemon.ModuleStatus
 import io.github.lingqiqi5211.crashcatcher.data.daemon.PackageIndexFacts
@@ -95,7 +96,7 @@ class DiagnosticsReportTest {
         val report = buildDiagnosticsReport(status = null, device = device, connected = false)
 
         assertTrue(report.contains("unreachable"))
-        assertTrue(report.contains("protocol: 3"))
+        assertTrue(report.contains("protocol: ${DaemonConstants.PROTOCOL_VERSION}"))
         assertTrue(report.contains("version: 0.2.0 (29)"))
         assertTrue(report.contains("connected: false"))
         // Device facts are local, so they are known either way.

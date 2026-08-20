@@ -654,17 +654,20 @@ impl DaemonCore {
                     stats: Box::new(stats),
                 })
             }
-            Request::ReadRuntimeLog { max_bytes } => {
+            Request::ReadRuntimeLog { name, max_bytes } => {
                 let budget = if max_bytes == 0 {
                     crate::diagnostics::DEFAULT_LOG_BYTES
                 } else {
                     max_bytes
                 };
-                let log = crate::diagnostics::read_runtime_log(&self.state_dir, budget);
+                let log =
+                    crate::diagnostics::read_runtime_log(&self.state_dir, name.as_deref(), budget);
                 Ok(Response::RuntimeLog {
+                    name: log.name,
                     text: log.text,
                     truncated: log.truncated,
                     total_bytes: log.total_bytes,
+                    files: log.files,
                 })
             }
             Request::ReopenApp {

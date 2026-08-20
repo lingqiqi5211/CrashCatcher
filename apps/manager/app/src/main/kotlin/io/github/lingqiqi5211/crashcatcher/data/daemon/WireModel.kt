@@ -384,6 +384,19 @@ data class PackageIndexFacts(
     val systemFlagsKnown: Boolean,
 )
 
+/**
+ * One readable log file.
+ *
+ * [name] is what a read request takes back, `old/` prefixed for the previous boot's copies. Not
+ * a path: the daemon resolves only the shapes it produced.
+ */
+@Serializable
+data class RuntimeLogFile(
+    val name: String,
+    val bytes: Long,
+    val modifiedMs: Long,
+)
+
 @Serializable
 data class BridgeFacts(
     val connected: Boolean,

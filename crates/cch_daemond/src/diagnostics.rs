@@ -1,79 +1,176 @@
-//! The daemon's own logs, for a user looking at why something is not working.
+//! The daemon's own logs, for the diagnostics page.
 //!
-//! Two files, both written by the module rather than by any Android facility:
+//! Three writers end up under `logs/`:
 //!
-//! - `logs/daemon.log` — this process's `tracing` output, redirected by `service.sh`.
-//! - `logs/service.log` — the launcher's own record of exits and restart attempts, which is the
-//!   only place a daemon that died before it could log anything leaves a trace.
+//! - `daemon.log` and its rotated `.1`…`.8`, written by this process. See [`crate::RollingLog`].
+//! - `daemon.stderr.log`, the launcher's redirect. Holds panics and failures that happen before
+//!   logging exists.
+//! - `service.log`, the launcher's own record of exits and restarts. A daemon that dies before
+//!   it can log anything leaves a trace here and nowhere else.
 //!
-//! Read from the tail. Nothing rotates these, and the answer to "why did it stop working" is
-//! always at the end.
+//! `logs/old/` holds the same set from the previous boot, moved aside by `service.sh`. The crash
+//! being chased is often the one that ended that session.
+//!
+//! Files are read from the tail: what matters is at the end.
 
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-/// Files are read from the end; this is how much of each is kept.
+use cch_wire::RuntimeLogFile;
+
+use crate::logsink::LOG_FILE_NAME;
+
+/// How much of one file is returned when no size is asked for.
 pub const DEFAULT_LOG_BYTES: u64 = 128 * 1024;
-/// Ceiling on what one request can ask for, so the answer still fits in a frame.
+/// Ceiling on one request, so the answer still fits in a frame.
 pub const MAX_LOG_BYTES: u64 = 512 * 1024;
 
+/// Where the previous boot's logs are kept.
+const OLD_DIRECTORY: &str = "old";
+
+/// The launcher's redirect of the daemon's stderr.
+const STDERR_FILE_NAME: &str = "daemon.stderr.log";
+
+/// The launcher's own record of starts, exits and restarts.
+const SERVICE_FILE_NAME: &str = "service.log";
+
 pub struct RuntimeLog {
+    /// Which file this is, matching one of [`Self::files`].
+    pub name: String,
     pub text: String,
     /// Whether anything was cut from the front.
     pub truncated: bool,
-    /// Size of the logs on disk, which is what tells a reader the tail is a tail.
+    /// Size of this file on disk.
     pub total_bytes: u64,
+    /// Everything available to read, newest first.
+    pub files: Vec<RuntimeLogFile>,
 }
 
-/// Reads the tail of both logs, newest file last.
-pub fn read_runtime_log(state_dir: &Path, max_bytes: u64) -> RuntimeLog {
-    let budget = max_bytes.clamp(4 * 1024, MAX_LOG_BYTES);
+/// Reads one log file, and lists the rest.
+///
+/// The listing travels with the content so the page can offer the other files without a second
+/// round trip. An unknown or absent `name` falls back to the first listed file — the daemon's
+/// live log, which is what someone opening the page came for.
+pub fn read_runtime_log(state_dir: &Path, name: Option<&str>, max_bytes: u64) -> RuntimeLog {
     let logs = state_dir.join("logs");
+    let files = list_files(&logs);
 
-    // Half the budget each, so a chatty daemon cannot push the launcher's exit codes out of the
-    // answer — those are the lines that explain a daemon which is not running at all.
-    let service = read_tail(&logs.join("service.log"), budget / 2);
-    let daemon = read_tail(&logs.join("daemon.log"), budget - budget / 2);
+    let selected = name
+        .and_then(|name| files.iter().find(|file| file.name == name))
+        .or_else(|| files.first());
 
-    let mut text = String::new();
-    if let Some(section) = section("service.log", &service) {
-        text.push_str(&section);
-    }
-    if let Some(section) = section("daemon.log", &daemon) {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&section);
-    }
-    if text.is_empty() {
-        text.push_str("(no logs yet)\n");
-    }
+    let Some(selected) = selected else {
+        return RuntimeLog {
+            name: String::new(),
+            text: "(no logs yet)\n".to_owned(),
+            truncated: false,
+            total_bytes: 0,
+            files,
+        };
+    };
 
+    let budget = max_bytes.clamp(4 * 1024, MAX_LOG_BYTES);
+    let tail = read_tail(&resolve(&logs, &selected.name), budget);
     RuntimeLog {
-        text,
-        truncated: service.truncated || daemon.truncated,
-        total_bytes: service.total_bytes + daemon.total_bytes,
+        name: selected.name.clone(),
+        text: if tail.text.trim().is_empty() {
+            "(empty)\n".to_owned()
+        } else {
+            tail.text
+        },
+        truncated: tail.truncated,
+        total_bytes: tail.total_bytes,
+        files,
     }
 }
 
-fn section(name: &str, tail: &Tail) -> Option<String> {
-    let body = tail.text.trim_end();
-    if body.is_empty() {
-        return None;
-    }
-    let head = if tail.truncated {
-        format!(
-            "===== {name} (last {} bytes of {}) =====",
-            body.len(),
-            tail.total_bytes
-        )
-    } else {
-        format!("===== {name} ({} bytes) =====", tail.total_bytes)
+/// Everything readable under `logs/`, this boot before the last, live file first.
+fn list_files(logs: &Path) -> Vec<RuntimeLogFile> {
+    let mut files = Vec::new();
+    collect(logs, None, &mut files);
+    collect(&logs.join(OLD_DIRECTORY), Some(OLD_DIRECTORY), &mut files);
+
+    // By what each file is, not when it was last written. Sorting by mtime put whichever file
+    // had just been appended to at the top, so the page opened on `service.log` — three lines
+    // from the launcher — whenever the daemon had been quiet for a moment, and the menu
+    // reshuffled itself between visits.
+    files.sort_by_key(|file| rank(&file.name));
+    files
+}
+
+/// Sort key: this boot before `old/`, and within a boot the daemon's own log first.
+fn rank(name: &str) -> (u8, u8, u32, String) {
+    let (boot, file) = match name.split_once('/') {
+        Some((OLD_DIRECTORY, file)) => (1, file),
+        _ => (0, name),
     };
-    Some(format!("{head}\n{body}\n"))
+    let (kind, index) = match file {
+        LOG_FILE_NAME => (0, 0),
+        STDERR_FILE_NAME => (2, 0),
+        SERVICE_FILE_NAME => (3, 0),
+        // `daemon.log.1` … `.8`, oldest last.
+        _ => match file
+            .strip_prefix(LOG_FILE_NAME)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .and_then(|number| number.parse::<u32>().ok())
+        {
+            Some(number) => (1, number),
+            None => (4, 0),
+        },
+    };
+    (boot, kind, index, file.to_owned())
+}
+
+fn collect(directory: &Path, prefix: Option<&str>, out: &mut Vec<RuntimeLogFile>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // `.boot_id` is bookkeeping, not a log.
+        if file_name.starts_with('.') {
+            continue;
+        }
+        out.push(RuntimeLogFile {
+            name: match prefix {
+                Some(prefix) => format!("{prefix}/{file_name}"),
+                None => file_name,
+            },
+            bytes: metadata.len(),
+            modified_ms: modified_ms(&metadata),
+        });
+    }
+}
+
+fn modified_ms(metadata: &fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+/// Resolves a listed name back to a path.
+///
+/// Only the two shapes `list_files` produces are accepted, so a name from the wire cannot reach
+/// outside the log directory however it is spelled.
+fn resolve(logs: &Path, name: &str) -> PathBuf {
+    match name.split_once('/') {
+        Some((OLD_DIRECTORY, file)) => logs.join(OLD_DIRECTORY).join(file),
+        _ => logs.join(name),
+    }
 }
 
 #[derive(Default)]
@@ -84,9 +181,6 @@ struct Tail {
 }
 
 /// The last `budget` bytes of a file, starting at a line boundary.
-///
-/// A missing file is not an error: `service.log` only exists once the launcher has had something
-/// to say, and asking for logs is what a user does when things are already odd.
 fn read_tail(path: &Path, budget: u64) -> Tail {
     let Ok(mut file) = File::open(path) else {
         return Tail::default();
@@ -111,8 +205,8 @@ fn read_tail(path: &Path, budget: u64) -> Tail {
         };
     }
 
-    // Lossy rather than refusing: a log cut mid-character is still the log, and this is the one
-    // request whose whole purpose is to work when other things do not.
+    // Lossy rather than refusing. A log cut mid-character is still the log, and this is the one
+    // request whose purpose is to work when other things do not.
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     if truncated {
         // The first line is whatever the cut landed in the middle of.
@@ -136,7 +230,7 @@ mod tests {
 
     fn write(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("log directory");
+            fs::create_dir_all(parent).expect("log directory");
         }
         let mut file = File::create(path).expect("log file");
         file.write_all(contents.as_bytes()).expect("write");
@@ -145,36 +239,106 @@ mod tests {
     #[test]
     fn missing_logs_are_not_an_error() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let log = read_runtime_log(directory.path(), DEFAULT_LOG_BYTES);
-        assert!(!log.truncated);
-        assert_eq!(log.total_bytes, 0);
+        let log = read_runtime_log(directory.path(), None, DEFAULT_LOG_BYTES);
+        assert!(log.files.is_empty());
         assert!(log.text.contains("no logs yet"));
     }
 
     #[test]
-    fn both_files_appear_with_the_launcher_first() {
+    fn every_writer_is_listed_including_the_previous_boot() {
         let directory = tempfile::tempdir().expect("tempdir");
-        write(
-            &directory.path().join("logs/service.log"),
-            "2026-08-20 daemon exited code=1 attempt=1\n",
-        );
-        write(
-            &directory.path().join("logs/daemon.log"),
-            "INFO catcherd: crashcatcher daemon ready\n",
-        );
+        let logs = directory.path().join("logs");
+        write(&logs.join("daemon.log"), "live\n");
+        write(&logs.join("daemon.log.1"), "rotated\n");
+        write(&logs.join("service.log"), "launcher\n");
+        write(&logs.join("daemon.stderr.log"), "panic\n");
+        write(&logs.join("old/daemon.log"), "previous boot\n");
+        // Bookkeeping, not a log.
+        write(&logs.join(".boot_id"), "abc\n");
 
-        let log = read_runtime_log(directory.path(), DEFAULT_LOG_BYTES);
+        let log = read_runtime_log(directory.path(), None, DEFAULT_LOG_BYTES);
 
-        let service = log.text.find("service.log").expect("service section");
-        let daemon = log.text.find("daemon.log").expect("daemon section");
-        assert!(service < daemon, "the launcher's record comes first");
-        assert!(log.text.contains("daemon exited code=1"));
-        assert!(log.text.contains("crashcatcher daemon ready"));
-        assert!(!log.truncated);
+        let names: Vec<&str> = log.files.iter().map(|file| file.name.as_str()).collect();
+        assert!(names.contains(&"daemon.log"));
+        assert!(names.contains(&"daemon.log.1"));
+        assert!(names.contains(&"service.log"));
+        assert!(names.contains(&"daemon.stderr.log"));
+        assert!(names.contains(&"old/daemon.log"), "{names:?}");
+        assert!(!names.iter().any(|name| name.contains("boot_id")));
     }
 
-    /// A cut lands mid-line, and half a line at the top reads as corruption rather than as a
-    /// tail. It is dropped, and the header says the file is longer than what is shown.
+    #[test]
+    fn a_named_file_is_the_one_read() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let logs = directory.path().join("logs");
+        write(&logs.join("daemon.log"), "live session\n");
+        write(&logs.join("old/daemon.log"), "the boot before\n");
+
+        let log = read_runtime_log(directory.path(), Some("old/daemon.log"), DEFAULT_LOG_BYTES);
+
+        assert_eq!(log.name, "old/daemon.log");
+        assert!(log.text.contains("the boot before"));
+    }
+
+    /// A name arrives over the wire, so it must not be able to address anything else.
+    #[test]
+    fn a_name_cannot_escape_the_log_directory() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("logs/daemon.log"), "live\n");
+        write(&directory.path().join("secret.txt"), "not a log\n");
+
+        for attempt in ["../secret.txt", "old/../../secret.txt", "/etc/hosts"] {
+            let log = read_runtime_log(directory.path(), Some(attempt), DEFAULT_LOG_BYTES);
+            assert!(
+                !log.text.contains("not a log"),
+                "{attempt} reached outside the log directory"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_name_falls_back_to_the_live_log() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("logs/daemon.log"), "live\n");
+
+        let log = read_runtime_log(directory.path(), Some("nope.log"), DEFAULT_LOG_BYTES);
+
+        assert_eq!(log.name, "daemon.log");
+        assert!(log.text.contains("live"));
+    }
+
+    /// The page opens on whatever comes first, so the order decides what it opens on.
+    #[test]
+    fn the_listing_leads_with_the_daemons_own_log() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let logs = directory.path().join("logs");
+        // Written in the order that made the old mtime sort pick the wrong one.
+        write(&logs.join("old/daemon.log"), "previous boot\n");
+        write(&logs.join("daemon.log.2"), "older\n");
+        write(&logs.join("daemon.log.1"), "rotated\n");
+        write(&logs.join("daemon.stderr.log"), "panic\n");
+        write(&logs.join("daemon.log"), "live\n");
+        write(&logs.join("service.log"), "launcher\n");
+
+        let log = read_runtime_log(directory.path(), None, DEFAULT_LOG_BYTES);
+
+        let names: Vec<&str> = log.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "daemon.log",
+                "daemon.log.1",
+                "daemon.log.2",
+                "daemon.stderr.log",
+                "service.log",
+                "old/daemon.log",
+            ],
+        );
+        assert_eq!(log.name, "daemon.log");
+        assert!(log.text.contains("live"));
+    }
+
+    /// A cut lands mid-line, and half a line at the top reads as corruption rather than a tail.
     #[test]
     fn a_long_log_is_cut_at_a_line_boundary() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -183,17 +347,14 @@ mod tests {
             .collect();
         write(&directory.path().join("logs/daemon.log"), &body);
 
-        let log = read_runtime_log(directory.path(), 4 * 1024);
+        let log = read_runtime_log(directory.path(), None, 4 * 1024);
 
         assert!(log.truncated);
         assert!(log.total_bytes > 4 * 1024);
         assert!(log.text.contains("line 1999"), "the end is what is kept");
         assert!(!log.text.contains("line 0 padding"));
-        for line in log.text.lines().skip(1) {
-            assert!(
-                line.is_empty() || line.starts_with("line ") || line.starts_with("====="),
-                "no half line survived: {line:?}"
-            );
+        for line in log.text.lines().filter(|line| !line.is_empty()) {
+            assert!(line.starts_with("line "), "no half line survived: {line:?}");
         }
     }
 
@@ -202,10 +363,13 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         write(&directory.path().join("logs/daemon.log"), "hello\n");
 
-        // Absurd in both directions; neither may panic or read the whole disk.
-        assert!(read_runtime_log(directory.path(), 0).text.contains("hello"));
         assert!(
-            read_runtime_log(directory.path(), u64::MAX)
+            read_runtime_log(directory.path(), None, 0)
+                .text
+                .contains("hello")
+        );
+        assert!(
+            read_runtime_log(directory.path(), None, u64::MAX)
                 .text
                 .contains("hello")
         );

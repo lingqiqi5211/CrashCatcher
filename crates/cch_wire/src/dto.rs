@@ -177,6 +177,18 @@ pub struct PackageIndexFacts {
     pub system_flags_known: bool,
 }
 
+/// One readable log file.
+///
+/// `name` is what [`crate::Request::ReadRuntimeLog`] takes back, `old/` prefixed for the previous
+/// boot's copies. It is not a path: the daemon resolves only the shapes it produced, so a name
+/// off the wire cannot address anything outside the log directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeLogFile {
+    pub name: String,
+    pub bytes: u64,
+    pub modified_ms: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeFacts {
     pub connected: bool,
