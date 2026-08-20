@@ -1,11 +1,16 @@
-use std::{env, fs, io, path::PathBuf, process::Command, sync::Arc};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use cch_auth::ManagerPin;
 use cch_bridge_supervisor::{BridgeProcessSpec, BridgeSupervisor, RestartPolicy};
 use cch_config::{CONFIG_FILE_NAME, ConfigStore};
 use cch_daemond::{
     BridgeBroker, DaemonCore, DaemonRuntime, DaemonServers, LogLevelControl, PackageIndexError,
-    RuntimeDialogSettings, ServerError, load_package_index, start_collectors,
+    RollingLog, RuntimeDialogSettings, ServerError, load_package_index, start_collectors,
 };
 use cch_store::Store;
 use cch_wire::BRIDGE_SOCKET_NAME;
@@ -18,9 +23,12 @@ use tracing_subscriber::{
 const MANAGER_PACKAGE: &str = "io.github.lingqiqi5211.crashcatcher";
 
 fn main() -> Result<(), MainError> {
-    let log_control = install_logging();
+    // Arguments first: the log file lives under the state directory, so there is nowhere to
+    // write until they are parsed. A failure before this reaches stderr, which the launcher
+    // redirects.
     let arguments = Arguments::parse(env::args().skip(1))?;
     fs::create_dir_all(&arguments.state_dir)?;
+    let log_control = install_logging(&arguments.state_dir);
     let store = Arc::new(Store::open(arguments.state_dir.join("store"))?);
     let config_store = ConfigStore::new(arguments.state_dir.join(CONFIG_FILE_NAME));
     let packages = load_package_index()?;
@@ -65,14 +73,33 @@ fn main() -> Result<(), MainError> {
 
 /// Installs the log subscriber and returns the handle that can change its level later.
 ///
-/// A reload layer rather than a fixed filter: the debug switch exists to capture something that
-/// is happening now, and a level that only took effect on restart would lose it.
-fn install_logging() -> Arc<dyn LogLevelControl> {
+/// A reload layer, not a fixed filter: the debug switch exists to capture something that is
+/// happening now, and a level that only applied on restart would lose it.
+///
+/// Falls back to stdout if the log file cannot be opened, which keeps the launcher's redirect as
+/// the last resort rather than losing the output entirely.
+fn install_logging(state_dir: &Path) -> Arc<dyn LogLevelControl> {
     let (filter, handle) = reload::Layer::new(LevelFilter::INFO);
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer().with_ansi(false))
-        .init();
+    let registry = tracing_subscriber::registry().with(filter);
+
+    match RollingLog::open(state_dir.join("logs")) {
+        Ok(sink) => registry
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    // `Mutex<W>` is what tracing-subscriber accepts as a shared writer, and the
+                    // lock is also what keeps two threads' records from interleaving mid-line.
+                    .with_writer(Mutex::new(sink)),
+            )
+            .init(),
+        Err(error) => {
+            registry
+                .with(tracing_subscriber::fmt::layer().with_ansi(false))
+                .init();
+            warn!(%error, "could not open the log file; logging to stdout");
+        }
+    }
+
     Arc::new(ReloadableLevel(handle))
 }
 

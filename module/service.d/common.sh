@@ -22,6 +22,16 @@ set_module_status() {
   ' "$MODULE_PROP" > "$temp" && chmod 0644 "$temp" && mv -f "$temp" "$MODULE_PROP"
 }
 
+# The launcher's own log, which the diagnostics page reads alongside the daemon's.
+#
+# It is the only record of what happened *around* the daemon rather than inside it: which ABI
+# was chosen, a stale instance being cleared, an exit code, a restart that never became ready.
+# A daemon that dies before it can log anything leaves nothing anywhere else.
+service_log() {
+  mkdir -p "$STATE_DIR/logs" 2>/dev/null
+  printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$STATE_DIR/logs/service.log"
+}
+
 atomic_write() {
   target="$1"
   value="$2"
