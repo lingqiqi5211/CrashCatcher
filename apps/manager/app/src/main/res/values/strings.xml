@@ -303,7 +303,7 @@
     <string name="error_title_unauthorized">签名校验未通过</string>
     <string name="error_body_unauthorized">签名不匹配。守护进程只认模块里固定的那张证书</string>
     <string name="error_title_version">版本不匹配</string>
-    <string name="error_body_version">模块与管理器协议版本不同，把旧的那半更新到同一版本</string>
+    <string name="error_body_version">模块与管理器不兼容，请安装同一版本的配套文件后重试。</string>
     <string name="error_title_unavailable">守护进程暂时不可用</string>
     <string name="error_body_unavailable">它正在启动或某个依赖尚未就绪，稍后重试。</string>
     <string name="error_title_protocol">协议解析失败</string>
