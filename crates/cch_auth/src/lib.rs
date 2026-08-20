@@ -2,7 +2,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 use cch_apk_sig::{ApkSigError, CertificateDigest};
-use cch_packages::{PackageIndex, android_path_is_absolute};
+use cch_packages::{ANDROID_UID_USER_RANGE, PackageIndex, android_path_is_absolute};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -121,7 +121,15 @@ impl<'a, S: CertificateSource> Authenticator<'a, S> {
         }
     }
     pub fn authenticate_uid(&self, uid: u32) -> Result<AuthenticatedManager, AuthError> {
-        let candidates: Vec<_> = self.packages.by_uid(uid).collect();
+        // AOSP's `packages.list` has one row per package and stores its appId. `SO_PEERCRED`, on
+        // the other hand, reports the process's full uid (`userId * 100000 + appId`). Keep an
+        // exact lookup first for ROMs that write full uids, then fall back to the appId so a
+        // genuine manager in a work profile, Second Space or another user is not rejected.
+        let app_id = uid % ANDROID_UID_USER_RANGE;
+        let mut candidates: Vec<_> = self.packages.by_uid(uid).collect();
+        if candidates.is_empty() && app_id != uid {
+            candidates.extend(self.packages.by_uid(app_id));
+        }
         if candidates.is_empty() {
             return Err(AuthError::UnknownUid(uid));
         }
@@ -295,6 +303,9 @@ mod tests {
             auth.authenticate_uid(10123).unwrap().package_name,
             "com.manager"
         );
+        let secondary_user = auth.authenticate_uid(1_010_123).unwrap();
+        assert_eq!(secondary_user.uid, 1_010_123);
+        assert_eq!(secondary_user.package_name, "com.manager");
         assert!(matches!(
             auth.authenticate_uid(9),
             Err(AuthError::UnknownUid(9))
