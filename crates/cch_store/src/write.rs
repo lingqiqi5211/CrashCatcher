@@ -26,12 +26,26 @@ impl Store {
         record: &CrashRecord,
         retention: RetentionPolicy,
     ) -> Result<Inserted, StoreError> {
+        self.insert_with_sources(record, retention, &[], 0)
+    }
+
+    /// Records one occurrence and confirms every contributing source in the same transaction.
+    ///
+    /// A daemon crash can therefore leave either both the record and its source keys, or neither;
+    /// it cannot leave a key that makes the next daemon skip a record which never reached SQLite.
+    pub fn insert_with_sources(
+        &self,
+        record: &CrashRecord,
+        retention: RetentionPolicy,
+        source_keys: &[String],
+        ingested_at_ms: i64,
+    ) -> Result<Inserted, StoreError> {
         let id = self.next_id(record.happened_at_ms)?;
         let written =
             self.payloads
                 .write(&id, &record.payload, retention.max_payload_bytes_per_record)?;
 
-        match self.insert_rows(&id, record, written.as_ref()) {
+        match self.insert_rows(&id, record, written.as_ref(), source_keys, ingested_at_ms) {
             Ok(inserted) => Ok(inserted),
             Err(error) => {
                 if let Some(written) = &written {
@@ -48,6 +62,8 @@ impl Store {
         id: &RecordId,
         record: &CrashRecord,
         written: Option<&WrittenPayload>,
+        source_keys: &[String],
+        ingested_at_ms: i64,
     ) -> Result<Inserted, StoreError> {
         let group_id = record.group_id();
         let mut connection = self.connection()?;
@@ -154,6 +170,14 @@ impl Store {
             params![id.as_str()],
             sql::map_record,
         )?;
+
+        for source_key in source_keys {
+            transaction.execute(
+                "INSERT INTO ingested_source (source_key, ingested_at_ms) VALUES (?1, ?2)
+                 ON CONFLICT(source_key) DO NOTHING",
+                params![source_key, ingested_at_ms],
+            )?;
+        }
 
         transaction.commit()?;
 
@@ -387,6 +411,25 @@ mod tests {
             !store.store.mark_ingested(key, 2).expect("second claim"),
             "a second claim must report the duplicate"
         );
+    }
+
+    #[test]
+    fn a_record_and_its_source_keys_commit_together() {
+        let store = TestStore::new();
+        let source_keys = vec!["events:1".to_owned(), "crash:1".to_owned()];
+
+        store
+            .store
+            .insert_with_sources(
+                &java_record(1_000),
+                RetentionPolicy::default(),
+                &source_keys,
+                1_001,
+            )
+            .expect("inserts record and keys");
+
+        assert!(store.store.was_ingested("events:1").expect("checks"));
+        assert!(store.store.was_ingested("crash:1").expect("checks"));
     }
 
     #[test]

@@ -10,9 +10,9 @@ mod reader;
 
 pub use crash::{CrashBufferReport, JavaFrame, TextLogEntry, parse_crash_buffer};
 pub use event::{
-    AM_ANR_TAG, AM_CRASH_TAG, ActivityEvent, AmAnrEvent, AmCrashEvent, EventRecord, EventValue,
-    SCREEN_TOGGLED_TAG, ScreenEvent, WM_SET_KEYGUARD_SHOWN_TAG, parse_activity_event,
-    parse_event_payload, parse_screen_event,
+    AM_ANR_TAG, AM_CRASH_TAG, AM_WTF_TAG, ActivityEvent, AmAnrEvent, AmCrashEvent, AmWtfEvent,
+    EventRecord, EventValue, SCREEN_TOGGLED_TAG, ScreenEvent, WM_SET_KEYGUARD_SHOWN_TAG,
+    parse_activity_event, parse_event_payload, parse_screen_event,
 };
 pub use logger_entry::{LoggerEntry, parse_logger_entry};
 #[cfg(target_os = "android")]

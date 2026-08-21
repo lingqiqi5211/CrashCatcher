@@ -290,7 +290,15 @@ impl DaemonCore {
         }
     }
 
-    pub fn ingest(&self, mut record: CrashRecord) -> Result<Option<Inserted>, WireError> {
+    pub fn ingest(&self, record: CrashRecord) -> Result<Option<Inserted>, WireError> {
+        self.ingest_with_sources(record, &[])
+    }
+
+    pub fn ingest_with_sources(
+        &self,
+        mut record: CrashRecord,
+        source_keys: &[String],
+    ) -> Result<Option<Inserted>, WireError> {
         self.enrich_record(&mut record)?;
         let config = self.load_config()?;
         if !captures_kind(&config, record.kind)
@@ -301,16 +309,27 @@ impl DaemonCore {
                 record.self_handled,
             )
         {
+            // The source was handled deliberately, but the active configuration excludes it.
+            // Confirm it so enabling a collector later does not import stale log-buffer history.
+            for source_key in source_keys {
+                self.store
+                    .mark_ingested(source_key, now_ms())
+                    .map_err(|error| error.to_wire())?;
+            }
             return Ok(None);
         }
 
         let inserted = self
             .store
-            .insert(&record, config.global.retention)
+            .insert_with_sources(&record, config.global.retention, source_keys, now_ms())
             .map_err(|error| error.to_wire())?;
-        self.store
-            .sweep(now_ms(), config.global.retention)
-            .map_err(|error| error.to_wire())?;
+        if let Err(error) = self.store.sweep(now_ms(), config.global.retention) {
+            // The record and its source keys have already committed together. Reporting the
+            // whole ingest as failed here would make the merger forget that success and could
+            // turn a later companion source into a duplicate record. Retention can retry on the
+            // next occurrence without invalidating what was safely stored.
+            warn!(%error, "stored crash but could not apply retention sweep");
+        }
 
         self.events.broadcast(Event::CrashRecorded {
             record: inserted.record.clone(),
@@ -1510,9 +1529,61 @@ mod tests {
             ),
             payload: PayloadSource::Inline(b"boom".to_vec()),
         };
-        let inserted = core.ingest(record).expect("ingest").expect("stored");
+        let source_keys = vec!["events:1".to_owned()];
+        let inserted = core
+            .ingest_with_sources(record, &source_keys)
+            .expect("ingest")
+            .expect("stored");
         assert_eq!(inserted.group.occurrence, 1);
+        assert!(core.was_source_ingested("events:1").expect("source key"));
         assert!(matches!(events.try_recv(), Ok(Event::CrashRecorded { .. })));
+    }
+
+    #[test]
+    fn an_enabled_wtf_event_is_stored_without_dropbox() {
+        let (_directory, core) = test_core();
+        core.update_config(|document| document.global.capture_wtf = true)
+            .expect("enables WTF capture");
+        let mut record = record_named("com.example", "com.example");
+        record.kind = CrashKind::Wtf;
+        record.sources = SourceMask::EVENTS;
+        record.summary = CrashSummary::new(
+            Some("ExampleTag".to_owned()),
+            Some("terrible failure".to_owned()),
+        );
+        record.payload = PayloadSource::Inline(b"WTF report\nMessage: terrible failure\n".to_vec());
+        let source_keys = vec!["events:wtf:1".to_owned()];
+
+        let inserted = core
+            .ingest_with_sources(record, &source_keys)
+            .expect("ingests")
+            .expect("stores");
+
+        assert_eq!(inserted.group.kind, CrashKind::Wtf);
+        assert_eq!(inserted.record.sources, SourceMask::EVENTS);
+        assert!(
+            core.was_source_ingested("events:wtf:1")
+                .expect("source key")
+        );
+    }
+
+    #[test]
+    fn a_disabled_wtf_event_is_confirmed_without_being_recorded() {
+        let (_directory, core) = test_core();
+        let mut record = record_named("com.example", "com.example");
+        record.kind = CrashKind::Wtf;
+        record.sources = SourceMask::EVENTS;
+        let source_keys = vec!["events:wtf:disabled".to_owned()];
+
+        assert!(
+            core.ingest_with_sources(record, &source_keys)
+                .expect("handles configured exclusion")
+                .is_none()
+        );
+        assert!(
+            core.was_source_ingested("events:wtf:disabled")
+                .expect("source key")
+        );
     }
 
     /// A tombstone names its process, so platform binaries arrive with a path where a package

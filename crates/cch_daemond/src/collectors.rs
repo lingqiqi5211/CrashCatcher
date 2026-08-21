@@ -1,3 +1,5 @@
+#[cfg(target_os = "android")]
+use std::collections::HashSet;
 use std::{
     fs,
     path::Path,
@@ -17,7 +19,7 @@ use cch_logd::ActivityEvent;
 #[cfg(target_os = "android")]
 use cch_logd::{AndroidLogReader, LogBuffer, LoggerEntry};
 use cch_logd::{CrashBufferReport, parse_crash_buffer};
-use cch_merge::{CrashFragment, CrashMerger, EvidenceQuality, FragmentPayload};
+use cch_merge::{CrashFragment, CrashMerger, EvidenceQuality, FragmentPayload, MergedCrash};
 use cch_model::{CrashKind, SourceMask};
 use cch_tombstone::{TombstoneFormat, TombstoneReport, parse_proto, parse_text};
 use cch_watcher::{
@@ -32,7 +34,14 @@ const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MERGE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "android")]
 const LOG_READER_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "android")]
+const LOG_HISTORY_GRACE_MS: i64 = 10_000;
+#[cfg(target_os = "android")]
+const EVENTS_LOG_MIGRATION_KEY: &str = "logd:events:durable-source-keys:v1";
+#[cfg(target_os = "android")]
+const CRASH_LOG_MIGRATION_KEY: &str = "logd:crash:durable-source-keys:v1";
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+type PendingSourceConfirmation = (Option<CollectorSource>, String);
 
 pub struct CollectorRuntime {
     stop: Arc<AtomicBool>,
@@ -87,37 +96,95 @@ fn spawn_ingest_loop(
         .name("ct-ingest".to_owned())
         .spawn(move || {
             let mut merger = CrashMerger::default();
+            let mut pending_confirmations = Vec::new();
             while !stop.load(Ordering::Acquire) {
                 match receiver.recv_timeout(MERGE_POLL_INTERVAL) {
                     Ok(fragment) => {
                         let source = collector_from_mask(fragment.source);
                         core.mark_collector_received(source, fragment.happened_at_ms);
-                        for record in merger.ingest(fragment) {
-                            if let Err(error) = core.ingest(record) {
-                                core.mark_collector_error(source, error.to_string());
-                            }
-                        }
+                        let completed = merger.ingest(fragment);
+                        persist_completed(
+                            &core,
+                            &mut merger,
+                            Some(source),
+                            completed,
+                            &mut pending_confirmations,
+                        );
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        for record in merger.flush_before(now_ms()) {
-                            if let Err(error) = core.ingest(record) {
-                                warn!(%error, "failed to persist merged crash");
-                            }
-                        }
+                        let completed = merger.flush_before(now_ms());
+                        persist_completed(
+                            &core,
+                            &mut merger,
+                            None,
+                            completed,
+                            &mut pending_confirmations,
+                        );
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             }
-            for record in merger.drain() {
-                if let Err(error) = core.ingest(record) {
-                    warn!(%error, "failed to persist crash while stopping");
-                }
-            }
+            let completed = merger.drain();
+            persist_completed(
+                &core,
+                &mut merger,
+                None,
+                completed,
+                &mut pending_confirmations,
+            );
         })
         .unwrap_or_else(|error| {
             warn!(%error, "failed to start ingest thread");
             thread::spawn(|| {})
         })
+}
+
+fn persist_completed(
+    core: &DaemonCore,
+    merger: &mut CrashMerger,
+    source: Option<CollectorSource>,
+    completed: Vec<MergedCrash>,
+    pending_confirmations: &mut Vec<PendingSourceConfirmation>,
+) {
+    for merged in completed {
+        let completion_id = merged.completion_id;
+        match core.ingest_with_sources(merged.record, &merged.source_keys) {
+            Ok(_) => {
+                merger.confirm_persisted(completion_id);
+            }
+            Err(error) => {
+                merger.reject_completion(completion_id);
+                if let Some(source) = source {
+                    core.mark_collector_error(source, error.to_string());
+                }
+                warn!(%error, "failed to persist merged crash");
+            }
+        }
+    }
+    pending_confirmations.extend(
+        merger
+            .take_confirmed_suppressed_source_keys()
+            .into_iter()
+            .map(|source_key| (source, source_key)),
+    );
+    *pending_confirmations = mark_source_keys(core, std::mem::take(pending_confirmations));
+}
+
+fn mark_source_keys(
+    core: &DaemonCore,
+    source_keys: Vec<PendingSourceConfirmation>,
+) -> Vec<PendingSourceConfirmation> {
+    let mut failed = Vec::new();
+    for (source, key) in source_keys {
+        if let Err(error) = core.mark_source_ingested(&key) {
+            if let Some(source) = source {
+                core.mark_collector_error(source, error.to_string());
+            }
+            warn!(%error, source_key = %key, "failed to confirm ingested source");
+            failed.push((source, key));
+        }
+    }
+    failed
 }
 
 fn spawn_artifact_loop(
@@ -176,11 +243,10 @@ fn ingest_source(core: &DaemonCore, sender: &Sender<CrashFragment>, source: Disc
         return;
     }
     match fragment_from_source(&source) {
-        Ok(Some(fragment)) => {
-            if sender.send(fragment).is_ok()
-                && let Err(error) = core.mark_source_ingested(&source.identity.key)
-            {
-                core.mark_collector_error(health_source, error.to_string());
+        Ok(Some(mut fragment)) => {
+            fragment.source_key = Some(source.identity.key.clone());
+            if sender.send(fragment).is_err() {
+                core.mark_collector_error(health_source, "ingest queue disconnected");
             }
         }
         // Read fine, just not a crash this tool records. Marked ingested so the same
@@ -328,6 +394,7 @@ fn anr_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String> {
         modified_ms(source),
     );
     fragment.package_name = Some(report.package_name().to_owned());
+    fragment.source_instance = Some(source.path.to_string_lossy().into_owned());
     fragment.summary_class = Some("ANR".to_owned());
     fragment.frames = report
         .main_thread()
@@ -536,6 +603,78 @@ fn run_log_reader(
 }
 
 #[cfg(target_os = "android")]
+fn log_source_key(buffer: &str, entry: &LoggerEntry<'_>, discriminator: &str) -> String {
+    format!(
+        "logd:{buffer}:{}:{}:{}:{}:{discriminator}",
+        entry.seconds, entry.nanoseconds, entry.pid, entry.tid,
+    )
+}
+
+#[cfg(target_os = "android")]
+fn confirm_processed_log_source(core: &DaemonCore, source: CollectorSource, key: &str) {
+    if let Err(error) = core.mark_source_ingested(key) {
+        core.mark_collector_error(source, error.to_string());
+    }
+}
+
+#[cfg(target_os = "android")]
+struct LogReplayMigration {
+    cutoff_ms: i64,
+    marker: &'static str,
+    active: bool,
+}
+
+#[cfg(target_os = "android")]
+impl LogReplayMigration {
+    fn new(core: &DaemonCore, marker: &'static str) -> Self {
+        Self {
+            cutoff_ms: now_ms().saturating_sub(LOG_HISTORY_GRACE_MS),
+            marker,
+            active: !matches!(core.was_source_ingested(marker), Ok(true)),
+        }
+    }
+
+    fn is_historical(
+        &mut self,
+        core: &DaemonCore,
+        source: CollectorSource,
+        happened_at_ms: i64,
+    ) -> bool {
+        if !self.active {
+            return false;
+        }
+        if happened_at_ms < self.cutoff_ms {
+            return true;
+        }
+        self.active = false;
+        // This marker means the one-time migration reached live entries. Historical crash keys
+        // below are deliberately confirmed as ignored, not misreported as stored records, so a
+        // later daemon restart cannot import the pre-upgrade log buffer as fresh crashes.
+        confirm_processed_log_source(core, source, self.marker);
+        false
+    }
+}
+
+#[cfg(target_os = "android")]
+fn log_source_seen(
+    core: &DaemonCore,
+    source: CollectorSource,
+    seen: &mut HashSet<String>,
+    source_key: &str,
+) -> bool {
+    if !seen.insert(source_key.to_owned()) {
+        return true;
+    }
+    match core.was_source_ingested(source_key) {
+        Ok(ingested) => ingested,
+        Err(error) => {
+            core.mark_collector_error(source, error.to_string());
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
 fn spawn_events_loop(
     core: Arc<DaemonCore>,
     stop: Arc<AtomicBool>,
@@ -545,6 +684,8 @@ fn spawn_events_loop(
         .name("ct-log-events".to_owned())
         .spawn(move || {
             use cch_logd::{parse_activity_event, parse_event_payload, parse_screen_event};
+            let mut replay = LogReplayMigration::new(&core, EVENTS_LOG_MIGRATION_KEY);
+            let mut seen = HashSet::new();
             run_log_reader(
                 &core,
                 &stop,
@@ -553,26 +694,66 @@ fn spawn_events_loop(
                 |entry| {
                     let at_ms =
                         i64::from(entry.seconds) * 1_000 + i64::from(entry.nanoseconds / 1_000_000);
+                    let historical = replay.is_historical(&core, CollectorSource::Events, at_ms);
                     let Ok(record) = parse_event_payload(entry.payload) else {
                         return true;
                     };
                     // This buffer is also the only place the daemon can see the screen
                     // being unlocked, which is what `MuteScope::UntilUnlock` expires on.
                     if let Some(screen) = parse_screen_event(&record) {
+                        let source_key = log_source_key("events", &entry, &record.tag.to_string());
+                        if log_source_seen(&core, CollectorSource::Events, &mut seen, &source_key) {
+                            return true;
+                        }
+                        if historical {
+                            confirm_processed_log_source(
+                                &core,
+                                CollectorSource::Events,
+                                &source_key,
+                            );
+                            return true;
+                        }
                         match core.clear_unlock_mutes() {
                             Ok(cleared) if cleared > 0 => {
                                 tracing::info!(?screen, cleared, "released the until-unlock mutes");
+                                confirm_processed_log_source(
+                                    &core,
+                                    CollectorSource::Events,
+                                    &source_key,
+                                );
                             }
-                            Ok(_) => {}
+                            Ok(_) => {
+                                confirm_processed_log_source(
+                                    &core,
+                                    CollectorSource::Events,
+                                    &source_key,
+                                );
+                            }
                             Err(error) => {
                                 warn!(%error, "could not clear the until-unlock mutes");
                             }
                         }
                         return true;
                     }
+                    let event_tag = record.tag;
                     if let Ok(event) = parse_activity_event(record) {
-                        let fragment = fragment_from_activity(event, at_ms);
-                        return sender.send(fragment).is_ok();
+                        let source_key = log_source_key("events", &entry, &event_tag.to_string());
+                        if log_source_seen(&core, CollectorSource::Events, &mut seen, &source_key) {
+                            return true;
+                        }
+                        if historical {
+                            confirm_processed_log_source(
+                                &core,
+                                CollectorSource::Events,
+                                &source_key,
+                            );
+                            return true;
+                        }
+                        let mut fragment = fragment_from_activity(event, at_ms);
+                        fragment.source_key = Some(source_key);
+                        if sender.send(fragment).is_err() {
+                            return false;
+                        }
                     }
                     true
                 },
@@ -594,12 +775,18 @@ fn spawn_crash_loop(
         .name("ct-log-crash".to_owned())
         .spawn(move || {
             use cch_logd::TextLogEntry;
+            let mut replay = LogReplayMigration::new(&core, CRASH_LOG_MIGRATION_KEY);
+            let mut seen = HashSet::new();
             run_log_reader(
                 &core,
                 &stop,
                 CollectorSource::CrashBuffer,
                 LogBuffer::Crash,
                 |entry| {
+                    let at_ms =
+                        i64::from(entry.seconds) * 1_000 + i64::from(entry.nanoseconds / 1_000_000);
+                    let historical =
+                        replay.is_historical(&core, CollectorSource::CrashBuffer, at_ms);
                     let Ok(text) = TextLogEntry::parse(entry.payload) else {
                         return true;
                     };
@@ -609,9 +796,25 @@ fn spawn_crash_loop(
                     let Ok(report) = parse_crash_buffer(text.message) else {
                         return true;
                     };
-                    let at_ms =
-                        i64::from(entry.seconds) * 1_000 + i64::from(entry.nanoseconds / 1_000_000);
-                    sender.send(fragment_from_crash(report, at_ms)).is_ok()
+                    let source_key = log_source_key("crash", &entry, "fatal");
+                    if log_source_seen(&core, CollectorSource::CrashBuffer, &mut seen, &source_key)
+                    {
+                        return true;
+                    }
+                    if historical {
+                        confirm_processed_log_source(
+                            &core,
+                            CollectorSource::CrashBuffer,
+                            &source_key,
+                        );
+                        return true;
+                    }
+                    let mut fragment = fragment_from_crash(report, at_ms);
+                    fragment.source_key = Some(source_key);
+                    if sender.send(fragment).is_err() {
+                        return false;
+                    }
+                    true
                 },
             );
         })
@@ -688,6 +891,28 @@ fn fragment_from_activity(event: ActivityEvent, happened_at_ms: i64) -> CrashFra
             fragment.summary_text = Some(event.reason);
             fragment
         }
+        ActivityEvent::Wtf(event) => {
+            let mut fragment = CrashFragment::new(
+                SourceMask::EVENTS,
+                EvidenceQuality::Structured,
+                CrashKind::Wtf,
+                event.process_name.clone(),
+                event.pid,
+                happened_at_ms,
+            );
+            fragment.package_name = Some(package_from_process(&event.process_name));
+            fragment.user_id = Some(event.user_id);
+            fragment.payload = FragmentPayload::Inline(
+                format!(
+                    "WTF report\nProcess: {}\nPID: {}\nFlags: {}\nTag: {}\nMessage: {}\n",
+                    event.process_name, event.pid, event.flags, event.tag, event.message,
+                )
+                .into_bytes(),
+            );
+            fragment.summary_class = (!event.tag.is_empty()).then_some(event.tag);
+            fragment.summary_text = (!event.message.is_empty()).then_some(event.message);
+            fragment
+        }
     }
 }
 
@@ -724,6 +949,32 @@ mod tests {
         assert_eq!(fragment.package_name.as_deref(), Some("com.example"));
         assert_eq!(fragment.user_id, Some(10));
         assert_eq!(fragment.kind, CrashKind::Anr);
+    }
+
+    #[test]
+    fn am_wtf_is_a_complete_attributed_fragment() {
+        let fragment = fragment_from_activity(
+            ActivityEvent::Wtf(cch_logd::AmWtfEvent {
+                user_id: 10,
+                pid: 42,
+                process_name: "com.example:remote".to_owned(),
+                flags: 7,
+                tag: "ExampleTag".to_owned(),
+                message: "terrible failure".to_owned(),
+            }),
+            1_000,
+        );
+        assert_eq!(fragment.package_name.as_deref(), Some("com.example"));
+        assert_eq!(fragment.user_id, Some(10));
+        assert_eq!(fragment.kind, CrashKind::Wtf);
+        assert_eq!(fragment.summary_class.as_deref(), Some("ExampleTag"));
+        assert_eq!(fragment.summary_text.as_deref(), Some("terrible failure"));
+        assert!(
+            matches!(fragment.payload, FragmentPayload::Inline(ref payload)
+            if String::from_utf8_lossy(payload).contains("Flags: 7")
+                && String::from_utf8_lossy(payload).contains("Tag: ExampleTag")
+                && String::from_utf8_lossy(payload).contains("Message: terrible failure"))
+        );
     }
 
     fn am_crash(exception_class: &str, message: &str) -> CrashFragment {

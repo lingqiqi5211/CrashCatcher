@@ -4,6 +4,7 @@ use crate::{Cursor, ParseError};
 
 pub const AM_ANR_TAG: i32 = 30_008;
 pub const AM_CRASH_TAG: i32 = 30_039;
+pub const AM_WTF_TAG: i32 = 30_040;
 pub const WM_SET_KEYGUARD_SHOWN_TAG: i32 = 30_067;
 pub const SCREEN_TOGGLED_TAG: i32 = 70_000;
 
@@ -58,10 +59,21 @@ pub struct AmAnrEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmWtfEvent {
+    pub user_id: i32,
+    pub pid: i32,
+    pub process_name: String,
+    pub flags: i32,
+    pub tag: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEvent {
     Crash(AmCrashEvent),
     Anr(AmAnrEvent),
+    Wtf(AmWtfEvent),
 }
 
 /// Something in the events buffer that ends a "muted until unlock" window.
@@ -184,6 +196,7 @@ pub fn parse_activity_event(record: EventRecord) -> Result<ActivityEvent, ParseE
     match record.tag {
         AM_CRASH_TAG => parse_am_crash(&values).map(ActivityEvent::Crash),
         AM_ANR_TAG => parse_am_anr(&values).map(ActivityEvent::Anr),
+        AM_WTF_TAG => parse_am_wtf(&values).map(ActivityEvent::Wtf),
         tag => Err(ParseError::UnexpectedTag(tag)),
     }
 }
@@ -230,7 +243,25 @@ fn parse_am_anr(values: &[EventValue]) -> Result<AmAnrEvent, ParseError> {
     })
 }
 
-/// Reads the first two `am_crash` / `am_anr` fields across platform variants.
+fn parse_am_wtf(values: &[EventValue]) -> Result<AmWtfEvent, ParseError> {
+    if values.len() != 6 {
+        return Err(ParseError::WrongValueCount {
+            expected: "6",
+            actual: values.len(),
+        });
+    }
+    let (user_id, pid) = activity_user_and_pid(values)?;
+    Ok(AmWtfEvent {
+        user_id,
+        pid,
+        process_name: string_at(values, 2, "process_name")?,
+        flags: int_at(values, 3, "flags")?,
+        tag: string_at(values, 4, "tag")?,
+        message: string_at(values, 5, "message")?,
+    })
+}
+
+/// Reads the first two `am_crash` / `am_anr` / `am_wtf` fields across platform variants.
 ///
 /// AOSP's event-log tag still declares `(User, PID)`, but some Android 16 builds emit
 /// `(PID, User)` while keeping that stale declaration. Treat the unambiguous large/small
@@ -367,6 +398,53 @@ mod tests {
         assert!(matches!(
             parsed,
             ActivityEvent::Anr(AmAnrEvent {
+                user_id: 10,
+                pid: 4242,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_am_wtf_without_a_dropbox_entry() {
+        let mut bytes = AM_WTF_TAG.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[EVENT_TYPE_LIST, 6]);
+        int(0, &mut bytes);
+        int(4242, &mut bytes);
+        string("com.example", &mut bytes);
+        int(123, &mut bytes);
+        string("ExampleTag", &mut bytes);
+        string("terrible failure", &mut bytes);
+
+        let parsed = parse_activity_event(parse_event_payload(&bytes).unwrap()).unwrap();
+        assert_eq!(
+            parsed,
+            ActivityEvent::Wtf(AmWtfEvent {
+                user_id: 0,
+                pid: 4242,
+                process_name: "com.example".to_owned(),
+                flags: 123,
+                tag: "ExampleTag".to_owned(),
+                message: "terrible failure".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_pid_first_android_16_am_wtf() {
+        let mut bytes = AM_WTF_TAG.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[EVENT_TYPE_LIST, 6]);
+        int(4242, &mut bytes);
+        int(10, &mut bytes);
+        string("com.example", &mut bytes);
+        int(0, &mut bytes);
+        string("ExampleTag", &mut bytes);
+        string("terrible failure", &mut bytes);
+
+        let parsed = parse_activity_event(parse_event_payload(&bytes).unwrap()).unwrap();
+        assert!(matches!(
+            parsed,
+            ActivityEvent::Wtf(AmWtfEvent {
                 user_id: 10,
                 pid: 4242,
                 ..

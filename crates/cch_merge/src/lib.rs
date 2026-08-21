@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 use cch_model::{CrashKind, CrashRecord, CrashSummary, Fingerprint, PayloadSource, SourceMask};
-use std::path::PathBuf;
+use std::{ops::Deref, path::PathBuf};
 
 pub const DEFAULT_MERGE_WINDOW_MS: i64 = 10_000;
 const RICH_SOURCE_SETTLE_WINDOW_MS: i64 = 250;
@@ -57,6 +57,10 @@ pub struct CrashFragment {
     pub summary_text: Option<String>,
     pub frames: Vec<String>,
     pub payload: FragmentPayload,
+    /// Durable identity of a log entry, acknowledged only after its merged record is stored.
+    pub source_key: Option<String>,
+    /// Stable identity across repeated writes to one artifact, currently used for ANR files.
+    pub source_instance: Option<String>,
 }
 impl CrashFragment {
     #[must_use]
@@ -86,7 +90,23 @@ impl CrashFragment {
             summary_text: None,
             frames: vec![],
             payload: FragmentPayload::None,
+            source_key: None,
+            source_instance: None,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct MergedCrash {
+    pub completion_id: u64,
+    pub record: CrashRecord,
+    pub source_keys: Vec<String>,
+}
+impl Deref for MergedCrash {
+    type Target = CrashRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.record
     }
 }
 
@@ -95,6 +115,8 @@ pub struct CrashMerger {
     window_ms: i64,
     pending: Vec<Pending>,
     recent: Vec<Recent>,
+    suppressed_source_keys: Vec<(u64, String)>,
+    next_completion_id: u64,
 }
 impl Default for CrashMerger {
     fn default() -> Self {
@@ -108,27 +130,41 @@ impl CrashMerger {
             window_ms,
             pending: Vec::new(),
             recent: Vec::new(),
+            suppressed_source_keys: Vec::new(),
+            next_completion_id: 1,
         }
     }
-    pub fn ingest(&mut self, fragment: CrashFragment) -> Vec<CrashRecord> {
+    pub fn ingest(&mut self, fragment: CrashFragment) -> Vec<MergedCrash> {
         let mut completed = self.flush_before(fragment.happened_at_ms);
+        if fragment.source_key.as_ref().is_some_and(|source_key| {
+            self.pending
+                .iter()
+                .any(|pending| pending.source_keys.contains(source_key))
+        }) {
+            return completed;
+        }
         let source_skew_ms = self.window_ms.clamp(0, MAX_SOURCE_SKEW_MS);
         let pending_match = self
             .pending
             .iter()
             .enumerate()
-            .filter(|(_, pending)| pending.matches(&fragment, source_skew_ms))
+            .filter(|(_, pending)| pending.matches(&fragment, source_skew_ms, self.window_ms))
             .min_by_key(|(_, pending)| pending.first_ms.abs_diff(fragment.happened_at_ms))
             .map(|(index, _)| index);
         let index = if let Some(index) = pending_match {
             self.pending[index].merge(fragment);
             index
         } else {
-            if self
+            if let Some(completion_id) = self
                 .recent
                 .iter()
-                .any(|recent| recent.matches(&fragment, source_skew_ms))
+                .filter(|recent| recent.matches(&fragment, source_skew_ms, self.window_ms))
+                .min_by_key(|recent| recent.first_ms.abs_diff(fragment.happened_at_ms))
+                .map(|recent| recent.completion_id)
             {
+                if let Some(key) = fragment.source_key {
+                    self.suppressed_source_keys.push((completion_id, key));
+                }
                 return completed;
             }
             self.pending.push(Pending::new(fragment));
@@ -140,7 +176,7 @@ impl CrashMerger {
         }
         completed
     }
-    pub fn flush_before(&mut self, watermark_ms: i64) -> Vec<CrashRecord> {
+    pub fn flush_before(&mut self, watermark_ms: i64) -> Vec<MergedCrash> {
         self.recent
             .retain(|recent| recent.first_ms.saturating_add(self.window_ms) >= watermark_ms);
         let mut out = vec![];
@@ -153,24 +189,67 @@ impl CrashMerger {
                 i += 1
             }
         }
-        out.sort_by_key(|r| r.happened_at_ms);
+        out.sort_by_key(|merged| merged.record.happened_at_ms);
         out
     }
-    pub fn drain(&mut self) -> Vec<CrashRecord> {
-        self.recent.clear();
-        let mut out: Vec<_> = self.pending.drain(..).map(Pending::finish).collect();
-        out.sort_by_key(|r| r.happened_at_ms);
+    pub fn drain(&mut self) -> Vec<MergedCrash> {
+        let pending = std::mem::take(&mut self.pending);
+        let mut out = Vec::with_capacity(pending.len());
+        for pending in pending {
+            let completion_id = self.allocate_completion_id();
+            out.push(pending.finish(completion_id));
+        }
+        out.sort_by_key(|merged| merged.record.happened_at_ms);
         out
+    }
+    pub fn confirm_persisted(&mut self, completion_id: u64) {
+        if let Some(recent) = self
+            .recent
+            .iter_mut()
+            .find(|recent| recent.completion_id == completion_id)
+        {
+            recent.persisted = true;
+        }
+    }
+    pub fn reject_completion(&mut self, completion_id: u64) {
+        self.recent
+            .retain(|recent| recent.completion_id != completion_id);
+        self.suppressed_source_keys
+            .retain(|(owner, _)| *owner != completion_id);
+    }
+    pub fn take_confirmed_suppressed_source_keys(&mut self) -> Vec<String> {
+        let suppressed = std::mem::take(&mut self.suppressed_source_keys);
+        let mut confirmed = Vec::new();
+        for (completion_id, key) in suppressed {
+            if self
+                .recent
+                .iter()
+                .any(|recent| recent.completion_id == completion_id && recent.persisted)
+            {
+                confirmed.push(key);
+            } else {
+                self.suppressed_source_keys.push((completion_id, key));
+            }
+        }
+        confirmed
     }
     #[must_use]
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
 
-    fn finish_pending(&mut self, index: usize) -> CrashRecord {
+    fn finish_pending(&mut self, index: usize) -> MergedCrash {
         let pending = self.pending.swap_remove(index);
-        self.recent.push(Recent::from_pending(&pending));
-        pending.finish()
+        let completion_id = self.allocate_completion_id();
+        self.recent
+            .push(Recent::from_pending(completion_id, &pending));
+        pending.finish(completion_id)
+    }
+
+    fn allocate_completion_id(&mut self) -> u64 {
+        let completion_id = self.next_completion_id;
+        self.next_completion_id = self.next_completion_id.wrapping_add(1);
+        completion_id
     }
 }
 
@@ -181,36 +260,66 @@ impl CrashMerger {
 /// from becoming a second record and a second alert.
 #[derive(Debug)]
 struct Recent {
+    completion_id: u64,
+    persisted: bool,
     kind: CrashKind,
     process: String,
     user: Option<i32>,
     pid: i32,
     first_ms: i64,
     sources: SourceMask,
+    anr_file: Option<String>,
 }
 impl Recent {
-    fn from_pending(pending: &Pending) -> Self {
+    fn from_pending(completion_id: u64, pending: &Pending) -> Self {
         Self {
+            completion_id,
+            persisted: false,
             kind: pending.kind.value,
             process: pending.process.clone(),
             user: pending.user.as_ref().map(|user| user.value),
             pid: pending.pid,
             first_ms: pending.first_ms,
             sources: pending.sources,
+            anr_file: pending.anr_file.clone(),
         }
     }
 
-    fn matches(&self, fragment: &CrashFragment, source_skew_ms: i64) -> bool {
+    fn matches(&self, fragment: &CrashFragment, source_skew_ms: i64, merge_window_ms: i64) -> bool {
         // Recent completions only absorb a slower companion source. Seeing the same source
-        // again means a new occurrence (notably repeated ANRs in the same still-running pid).
-        if self.sources.contains(fragment.source) {
+        // again normally means a new occurrence. ANR files are the exception: Android appends
+        // several process dumps to the same file and closes it after each append, so one ANR
+        // produces a burst of same-source fragments. A real repeated ANR starts with another
+        // ActivityManager event, which still creates a new pending occurrence below.
+        let repeated_anr_file = self.kind == CrashKind::Anr
+            && fragment.source == SourceMask::ANR_FILE
+            && self.sources.contains(SourceMask::ANR_FILE);
+        let repeated_anr_file = repeated_anr_file
+            && self
+                .anr_file
+                .as_deref()
+                .zip(fragment.source_instance.as_deref())
+                .is_some_and(|(recent, incoming)| recent == incoming);
+        if self.sources.contains(fragment.source) && !repeated_anr_file {
             return false;
         }
+        // Once an ANR file completed a record, later closes of that exact file and a trailing
+        // DropBox entry still belong to it while Android collects the remaining process stacks.
+        // A recent record without a file cannot safely claim a file for the full ten seconds:
+        // it may be the next genuine ANR in the same still-running process.
+        let trailing_anr_companion = self.kind == CrashKind::Anr
+            && self.sources.contains(SourceMask::ANR_FILE)
+            && fragment.source == SourceMask::DROPBOX;
+        let allowed_skew_ms = if repeated_anr_file || trailing_anr_companion {
+            merge_window_ms
+        } else {
+            source_skew_ms
+        };
         occurrence_identity_matches(self.pid, self.user, fragment.pid, fragment.user_id)
             && self.process == fragment.process_name
             && self.kind == fragment.kind
             && self.first_ms.abs_diff(fragment.happened_at_ms)
-                <= u64::try_from(source_skew_ms).unwrap_or(u64::MAX)
+                <= u64::try_from(allowed_skew_ms).unwrap_or(u64::MAX)
     }
 }
 
@@ -279,10 +388,16 @@ struct Pending {
     frames: Ranked<Vec<String>>,
     payload: Ranked<FragmentPayload>,
     sources: SourceMask,
+    source_keys: Vec<String>,
+    anr_file: Option<String>,
 }
 impl Pending {
     fn new(f: CrashFragment) -> Self {
         let q = f.quality;
+        let source_keys = f.source_key.into_iter().collect();
+        let anr_file = (f.source == SourceMask::ANR_FILE)
+            .then_some(f.source_instance)
+            .flatten();
         Self {
             kind: Ranked {
                 quality: q,
@@ -310,10 +425,26 @@ impl Pending {
                 value: f.payload,
             },
             sources: f.source,
+            source_keys,
+            anr_file,
         }
     }
-    fn matches(&self, f: &CrashFragment, source_skew_ms: i64) -> bool {
-        !self.sources.contains(f.source)
+    fn matches(&self, f: &CrashFragment, source_skew_ms: i64, merge_window_ms: i64) -> bool {
+        let repeated_anr_file = self.kind.value == CrashKind::Anr
+            && f.kind == CrashKind::Anr
+            && f.source == SourceMask::ANR_FILE
+            && self.sources.contains(SourceMask::ANR_FILE)
+            && self
+                .anr_file
+                .as_deref()
+                .zip(f.source_instance.as_deref())
+                .is_some_and(|(pending, incoming)| pending == incoming);
+        let allowed_skew_ms = if repeated_anr_file {
+            merge_window_ms
+        } else {
+            source_skew_ms
+        };
+        (!self.sources.contains(f.source) || repeated_anr_file)
             && occurrence_identity_matches(
                 self.pid,
                 self.user.as_ref().map(|user| user.value),
@@ -323,10 +454,18 @@ impl Pending {
             && self.process == f.process_name
             && self.kind.value == f.kind
             && self.first_ms.abs_diff(f.happened_at_ms)
-                <= u64::try_from(source_skew_ms).unwrap_or(u64::MAX)
+                <= u64::try_from(allowed_skew_ms).unwrap_or(u64::MAX)
     }
     fn merge(&mut self, f: CrashFragment) {
         let q = f.quality;
+        if let Some(source_key) = f.source_key
+            && !self.source_keys.contains(&source_key)
+        {
+            self.source_keys.push(source_key);
+        }
+        if f.source == SourceMask::ANR_FILE && self.anr_file.is_none() {
+            self.anr_file = f.source_instance;
+        }
         if self.pid == 0 && f.pid != 0 {
             self.pid = f.pid;
         }
@@ -378,7 +517,7 @@ impl Pending {
                 0
             }
             CrashKind::Anr if has_events && self.sources.contains(SourceMask::ANR_FILE) => 0,
-            CrashKind::Wtf if has_dropbox => 0,
+            CrashKind::Wtf if has_events || has_dropbox => 0,
             CrashKind::NativeCrash if has_user && self.sources.contains(SourceMask::TOMBSTONE) => {
                 RICH_SOURCE_SETTLE_WINDOW_MS
             }
@@ -391,7 +530,8 @@ impl Pending {
         }
     }
 
-    fn finish(self) -> CrashRecord {
+    fn finish(self, completion_id: u64) -> MergedCrash {
+        let source_keys = self.source_keys;
         let package = self.package.map(|v| v.value).unwrap_or_else(|| {
             self.process
                 .split(':')
@@ -407,26 +547,34 @@ impl Pending {
         let self_handled = self.kind.value == CrashKind::JavaException
             && self.sources.contains(SourceMask::CRASH_BUFFER)
             && !self.sources.contains(SourceMask::EVENTS);
-        CrashRecord {
-            kind: self.kind.value,
-            package_name: package,
-            process_name: self.process,
-            user_id: self.user.map(|v| v.value).unwrap_or(0),
-            pid: self.pid,
-            happened_at_ms: self.first_ms,
-            app_version_name: self.version_name.map(|v| v.value),
-            app_version_code: self.version_code.map(|v| v.value),
-            is_system_app: self.system.map(|v| v.value).unwrap_or(false),
-            // No collector knows this; the daemon settles it against the package index while
-            // enriching, which is also where `is_system_app` gets its real value.
-            package_installed: true,
-            is_foreground: self.foreground.map(|v| v.value),
-            self_handled,
-            dropped_count: self.dropped,
-            sources: self.sources,
-            summary: CrashSummary::new(class, self.text.map(|v| v.value)),
-            fingerprint: Fingerprint::from_raw_frames(self.kind.value, primary, &self.frames.value),
-            payload: self.payload.value.into_model(),
+        MergedCrash {
+            completion_id,
+            source_keys,
+            record: CrashRecord {
+                kind: self.kind.value,
+                package_name: package,
+                process_name: self.process,
+                user_id: self.user.map(|v| v.value).unwrap_or(0),
+                pid: self.pid,
+                happened_at_ms: self.first_ms,
+                app_version_name: self.version_name.map(|v| v.value),
+                app_version_code: self.version_code.map(|v| v.value),
+                is_system_app: self.system.map(|v| v.value).unwrap_or(false),
+                // No collector knows this; the daemon settles it against the package index while
+                // enriching, which is also where `is_system_app` gets its real value.
+                package_installed: true,
+                is_foreground: self.foreground.map(|v| v.value),
+                self_handled,
+                dropped_count: self.dropped,
+                sources: self.sources,
+                summary: CrashSummary::new(class, self.text.map(|v| v.value)),
+                fingerprint: Fingerprint::from_raw_frames(
+                    self.kind.value,
+                    primary,
+                    &self.frames.value,
+                ),
+                payload: self.payload.value.into_model(),
+            },
         }
     }
 }
@@ -496,7 +644,9 @@ mod tests {
         b.payload = FragmentPayload::Inline(b"proto".to_vec());
         m.ingest(a);
         m.ingest(b);
-        assert!(matches!(m.drain().remove(0).payload,PayloadSource::Inline(v) if v==b"proto"));
+        assert!(
+            matches!(m.drain().remove(0).record.payload,PayloadSource::Inline(v) if v==b"proto")
+        );
     }
 
     #[test]
@@ -841,20 +991,17 @@ mod tests {
     fn a_different_source_outside_the_skew_is_a_new_occurrence() {
         let mut merger = CrashMerger::default();
         let mut event = fragment(SourceMask::EVENTS, EvidenceQuality::Structured, 1_000);
-        event.kind = CrashKind::Anr;
         event.user_id = Some(0);
-        let mut file = fragment(SourceMask::ANR_FILE, EvidenceQuality::Artifact, 1_004);
-        file.kind = CrashKind::Anr;
-        file.user_id = Some(0);
+        let mut crash = fragment(SourceMask::CRASH_BUFFER, EvidenceQuality::Text, 1_004);
+        crash.user_id = Some(0);
         assert!(merger.ingest(event).is_empty());
-        assert_eq!(merger.ingest(file).len(), 1);
+        assert_eq!(merger.ingest(crash).len(), 1);
 
         let mut next = fragment(
             SourceMask::DROPBOX,
             EvidenceQuality::Structured,
             1_004 + MAX_SOURCE_SKEW_MS + 1,
         );
-        next.kind = CrashKind::Anr;
         next.user_id = Some(0);
         let next_ms = next.happened_at_ms;
         assert!(merger.ingest(next).is_empty());
@@ -865,6 +1012,154 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn anr_file_appends_and_a_late_dropbox_do_not_repeat_the_alert() {
+        let mut merger = CrashMerger::default();
+        let mut event = fragment(SourceMask::EVENTS, EvidenceQuality::Structured, 1_000);
+        event.kind = CrashKind::Anr;
+        event.user_id = Some(0);
+        let mut file = fragment(SourceMask::ANR_FILE, EvidenceQuality::Artifact, 1_004);
+        file.kind = CrashKind::Anr;
+        file.user_id = Some(0);
+        file.source_instance = Some("/data/anr/anr_2026-08-21-12-00-00".to_owned());
+        assert!(merger.ingest(event).is_empty());
+        let completed = merger.ingest(file.clone());
+        assert_eq!(completed.len(), 1);
+        merger.confirm_persisted(completed[0].completion_id);
+
+        file.happened_at_ms = 1_500;
+        assert!(merger.ingest(file.clone()).is_empty());
+        file.happened_at_ms = 5_000;
+        assert!(merger.ingest(file).is_empty());
+
+        let mut dropbox = fragment(SourceMask::DROPBOX, EvidenceQuality::Structured, 6_000);
+        dropbox.kind = CrashKind::Anr;
+        dropbox.user_id = Some(0);
+        assert!(merger.ingest(dropbox).is_empty());
+        assert_eq!(merger.pending_count(), 0);
+    }
+
+    #[test]
+    fn a_different_anr_file_is_a_new_occurrence() {
+        let mut merger = CrashMerger::default();
+        let mut event = fragment(SourceMask::EVENTS, EvidenceQuality::Structured, 1_000);
+        event.kind = CrashKind::Anr;
+        event.user_id = Some(0);
+        let mut first_file = fragment(SourceMask::ANR_FILE, EvidenceQuality::Artifact, 1_004);
+        first_file.kind = CrashKind::Anr;
+        first_file.user_id = Some(0);
+        first_file.source_instance = Some("/data/anr/anr_first".to_owned());
+        assert!(merger.ingest(event).is_empty());
+        assert_eq!(merger.ingest(first_file).len(), 1);
+
+        let mut second_file = fragment(SourceMask::ANR_FILE, EvidenceQuality::Artifact, 5_000);
+        second_file.kind = CrashKind::Anr;
+        second_file.user_id = Some(0);
+        second_file.source_instance = Some("/data/anr/anr_second".to_owned());
+        assert!(merger.ingest(second_file).is_empty());
+        assert_eq!(merger.pending_count(), 1);
+    }
+
+    #[test]
+    fn a_recent_anr_without_a_file_cannot_claim_a_later_file_for_ten_seconds() {
+        let mut merger = CrashMerger::default();
+        let mut dropbox = fragment(SourceMask::DROPBOX, EvidenceQuality::Structured, 1_000);
+        dropbox.kind = CrashKind::Anr;
+        dropbox.user_id = Some(0);
+        assert!(merger.ingest(dropbox).is_empty());
+        assert_eq!(
+            merger
+                .flush_before(1_000 + RICH_SOURCE_SETTLE_WINDOW_MS + 1)
+                .len(),
+            1
+        );
+
+        let mut next_file = fragment(SourceMask::ANR_FILE, EvidenceQuality::Artifact, 5_000);
+        next_file.kind = CrashKind::Anr;
+        next_file.user_id = Some(0);
+        next_file.source_instance = Some("/data/anr/anr_next".to_owned());
+        assert!(merger.ingest(next_file).is_empty());
+        assert_eq!(merger.pending_count(), 1);
+    }
+
+    #[test]
+    fn appends_to_one_pending_anr_file_stay_in_one_occurrence() {
+        let mut merger = CrashMerger::default();
+        let mut first = fragment(SourceMask::ANR_FILE, EvidenceQuality::Artifact, 1_000);
+        first.kind = CrashKind::Anr;
+        first.user_id = Some(0);
+        first.source_key = Some("anr:first-close".to_owned());
+        first.source_instance = Some("/data/anr/anr_pending".to_owned());
+        let mut append = first.clone();
+        append.happened_at_ms = 5_000;
+        append.source_key = Some("anr:second-close".to_owned());
+
+        assert!(merger.ingest(first).is_empty());
+        assert!(merger.ingest(append).is_empty());
+        assert_eq!(merger.pending_count(), 1);
+        let completed = merger.drain();
+        assert_eq!(
+            completed[0].source_keys,
+            ["anr:first-close", "anr:second-close"]
+        );
+    }
+
+    #[test]
+    fn source_keys_are_confirmed_only_after_the_record_is_persisted() {
+        let mut merger = CrashMerger::default();
+        let mut event = fragment(SourceMask::EVENTS, EvidenceQuality::Structured, 1_000);
+        event.source_key = Some("events:1".to_owned());
+        let mut crash = fragment(SourceMask::CRASH_BUFFER, EvidenceQuality::Text, 1_004);
+        crash.source_key = Some("crash:1".to_owned());
+        assert!(merger.ingest(event).is_empty());
+        let completed = merger.ingest(crash);
+        assert_eq!(completed[0].source_keys, ["events:1", "crash:1"]);
+
+        let mut late = fragment(SourceMask::DROPBOX, EvidenceQuality::Structured, 1_006);
+        late.source_key = Some("dropbox:1".to_owned());
+        assert!(merger.ingest(late).is_empty());
+        assert!(merger.take_confirmed_suppressed_source_keys().is_empty());
+
+        merger.confirm_persisted(completed[0].completion_id);
+        assert_eq!(
+            merger.take_confirmed_suppressed_source_keys(),
+            ["dropbox:1"]
+        );
+        let mut later = fragment(SourceMask::TOMBSTONE, EvidenceQuality::Artifact, 1_008);
+        later.source_key = Some("tombstone:1".to_owned());
+        assert!(merger.ingest(later).is_empty());
+        assert_eq!(
+            merger.take_confirmed_suppressed_source_keys(),
+            ["tombstone:1"]
+        );
+    }
+
+    #[test]
+    fn rejecting_storage_keeps_late_evidence_recoverable() {
+        let mut merger = CrashMerger::default();
+        let event = fragment(SourceMask::EVENTS, EvidenceQuality::Structured, 1_000);
+        let completed = merger.ingest(fragment(
+            SourceMask::CRASH_BUFFER,
+            EvidenceQuality::Text,
+            1_004,
+        ));
+        assert!(completed.is_empty(), "the event has not been ingested yet");
+        let completed = merger.ingest(event);
+        assert_eq!(completed.len(), 1);
+        merger.reject_completion(completed[0].completion_id);
+
+        assert!(
+            merger
+                .ingest(fragment(
+                    SourceMask::DROPBOX,
+                    EvidenceQuality::Structured,
+                    1_006,
+                ))
+                .is_empty()
+        );
+        assert_eq!(merger.pending_count(), 1);
     }
 
     #[test]
@@ -883,6 +1178,17 @@ mod tests {
         dropbox.kind = CrashKind::Anr;
         dropbox.user_id = Some(0);
         assert!(merger.ingest(dropbox).is_empty());
+        assert_eq!(merger.pending_count(), 0);
+    }
+
+    #[test]
+    fn an_activity_manager_wtf_finishes_without_waiting_for_dropbox() {
+        let mut merger = CrashMerger::default();
+        let mut event = fragment(SourceMask::EVENTS, EvidenceQuality::Structured, 1_000);
+        event.kind = CrashKind::Wtf;
+        event.user_id = Some(0);
+
+        assert_eq!(merger.ingest(event).len(), 1);
         assert_eq!(merger.pending_count(), 0);
     }
 
