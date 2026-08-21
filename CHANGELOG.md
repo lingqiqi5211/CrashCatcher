@@ -1,3 +1,18 @@
+# 0.3.1
+
+- 缩短 Java、Native 与 ANR 的捕捉及弹窗延迟，并让崩溃弹窗更聚焦。
+- 修复仅产生 am_wtf 事件的系统没有 WTF 报告正文的问题。
+- 修复 ANR 文件追加、不同 ANR 文件与日志重放的去重可靠性，避免误吞或漏记。
+- 保留多用户应用的正确归属与管理器页面状态。
+
+- build: release 0.3.1
+- docs: correct the version code source
+- manager: expose WTF report capture
+- daemon: capture WTF reports reliably
+- manager: focus crash alerts and preserve users
+- daemon: reduce crash alert latency
+- chore: update.json and changelog for v0.3.0
+
 # 0.3.0
 
 - 管理器改为监听、模块主动连接，解决部分 ROM 在 SELinux enforcing 下拒绝应用连接 root socket 的问题；两侧仍互相校验身份
