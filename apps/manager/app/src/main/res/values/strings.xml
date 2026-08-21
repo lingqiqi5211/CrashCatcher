@@ -217,6 +217,7 @@
     <string name="settings_capture_java">Java 异常</string>
     <string name="settings_capture_anr">ANR</string>
     <string name="settings_capture_native">Native 崩溃</string>
+    <string name="settings_capture_wtf">WTF 报告</string>
     <string name="settings_capture_self_handled">应用自行处理的异常</string>
     <string name="settings_include_system_apps">包含系统应用</string>
     <string name="settings_only_main_process">仅主进程</string>

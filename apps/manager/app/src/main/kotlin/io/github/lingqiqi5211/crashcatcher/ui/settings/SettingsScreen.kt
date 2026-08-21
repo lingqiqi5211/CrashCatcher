@@ -108,6 +108,7 @@ internal data class SettingsActions(
     val onCaptureJavaChange: (Boolean) -> Unit,
     val onCaptureAnrChange: (Boolean) -> Unit,
     val onCaptureNativeChange: (Boolean) -> Unit,
+    val onCaptureWtfChange: (Boolean) -> Unit,
     val onCaptureSelfHandledChange: (Boolean) -> Unit,
     val onNotifyModeChange: (NotifyMode) -> Unit,
     val onOnlyForegroundChange: (Boolean) -> Unit,

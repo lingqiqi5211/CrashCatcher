@@ -87,6 +87,14 @@ internal fun CaptureSettingsPage(
                 modifier = Modifier.testTag("crashcatcher.capture.native"),
             )
             SettingsSwitchRow(
+                title = stringResource(R.string.settings_capture_wtf),
+                description = "",
+                checked = config?.captureWtf ?: false,
+                onCheckedChange = actions.onCaptureWtfChange,
+                enabled = config != null,
+                modifier = Modifier.testTag("crashcatcher.capture.wtf"),
+            )
+            SettingsSwitchRow(
                 title = stringResource(R.string.settings_capture_self_handled),
                 description = "",
                 checked = config?.captureSelfHandled ?: true,

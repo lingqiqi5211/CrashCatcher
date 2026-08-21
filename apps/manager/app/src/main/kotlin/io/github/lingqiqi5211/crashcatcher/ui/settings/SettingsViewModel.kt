@@ -98,6 +98,8 @@ internal class SettingsViewModel(
 
     fun onCaptureNativeChange(enabled: Boolean) = patch(GlobalConfigPatch(captureNative = enabled))
 
+    fun onCaptureWtfChange(enabled: Boolean) = patch(GlobalConfigPatch(captureWtf = enabled))
+
     fun onCaptureSelfHandledChange(enabled: Boolean) =
         patch(GlobalConfigPatch(captureSelfHandled = enabled))
 

@@ -499,6 +499,7 @@ private fun SettingsViewModel.settingsActions(
     onCaptureJavaChange = ::onCaptureJavaChange,
     onCaptureAnrChange = ::onCaptureAnrChange,
     onCaptureNativeChange = ::onCaptureNativeChange,
+    onCaptureWtfChange = ::onCaptureWtfChange,
     onCaptureSelfHandledChange = ::onCaptureSelfHandledChange,
     onNotifyModeChange = ::onNotifyModeChange,
     onOnlyForegroundChange = ::onOnlyForegroundChange,
