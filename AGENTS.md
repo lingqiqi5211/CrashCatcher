@@ -21,7 +21,7 @@
 
 Rust edition 2024（rusqlite bundled、zstd、serde_json、tracing）；Kotlin + Compose + kotlinx.serialization + MeowUI；桥是纯 Java 对着 `android.jar` 编译再 `d8` 成 dex。
 
-**版本与坐标唯一真源**：Rust 侧 [Cargo.toml](Cargo.toml) 的 workspace 表，Kotlin 侧 `apps/manager/gradle/libs.versions.toml`，**发布版本号在 [version.properties](version.properties)**——Gradle 读它当 versionName（versionCode 由 `major*10000+minor*100+patch` 推导），`cch-packager` 读它写 `module.prop`。**文档不复述版本号。**
+**版本与坐标唯一真源**：Rust 侧 [Cargo.toml](Cargo.toml) 的 workspace 表，Kotlin 侧 `apps/manager/gradle/libs.versions.toml`，**发布版本号在 [version.properties](version.properties)**——Gradle 读它当 versionName，管理器和模块都用 Git 提交数当 versionCode；`cch-packager` 读同一份版本名写 `module.prop`。**文档不复述版本号。**
 
 ## 代码地图
 
