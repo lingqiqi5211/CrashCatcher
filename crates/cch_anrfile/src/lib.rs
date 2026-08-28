@@ -7,6 +7,19 @@ use thiserror::Error;
 
 pub const MAX_ANR_BYTES: usize = 64 * 1024 * 1024;
 
+const PID_HEADER: &str = "----- pid ";
+/// What the dump degrades to when tombstoned times out mid-ANR (`libdebuggerd_client: failed
+/// to read status response`). Same pid, process and timestamp; kernel wait channels in place
+/// of thread stacks. Worth parsing rather than rejecting — a system wedged badly enough to
+/// fail its own dump is exactly the ANR worth having.
+const WAIT_CHANNEL_HEADER: &str = "----- Waiting Channels: pid ";
+
+/// The header's contents, whichever of the two forms it takes.
+fn pid_header_body(line: &str) -> Option<&str> {
+    line.strip_prefix(PID_HEADER)
+        .or_else(|| line.strip_prefix(WAIT_CHANNEL_HEADER))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnrThread {
     pub name: String,
@@ -68,7 +81,7 @@ pub fn parse_anr(bytes: &[u8]) -> Result<AnrReport, AnrError> {
     let raw = String::from_utf8_lossy(bytes).replace("\r\n", "\n");
     let header = raw
         .lines()
-        .find(|line| line.starts_with("----- pid "))
+        .find(|line| pid_header_body(line).is_some())
         .ok_or(AnrError::MissingPid)?;
     let (pid, timestamp) = parse_pid_header(header)?;
     let process_name = raw
@@ -88,9 +101,7 @@ pub fn parse_anr(bytes: &[u8]) -> Result<AnrReport, AnrError> {
 }
 
 fn parse_pid_header(header: &str) -> Result<(i32, Option<String>), AnrError> {
-    let body = header
-        .strip_prefix("----- pid ")
-        .ok_or(AnrError::MissingPid)?;
+    let body = pid_header_body(header).ok_or(AnrError::MissingPid)?;
     let (pid_text, rest) = body.split_once(' ').ok_or(AnrError::InvalidPid)?;
     let pid = pid_text.parse::<i32>().map_err(|_| AnrError::InvalidPid)?;
     let timestamp = rest
@@ -161,6 +172,31 @@ Cmd line: com.example:worker
         assert_eq!(
             report.main_thread().and_then(AnrThread::top_frame),
             Some("at com.example.Home.onCreate(Home.kt:20)")
+        );
+    }
+
+    /// The shape a dump takes when tombstoned times out: wait channels instead of stacks.
+    /// Rejecting it cost the whole ANR collector, which reported itself impaired from the
+    /// first one it met and stayed that way.
+    #[test]
+    fn a_wait_channel_dump_is_still_an_anr() {
+        let sample = br#"Subject: Input dispatching timed out (com.example/.Home is not responding)
+
+----- dumping pid: 4891 at 435779
+libdebuggerd_client: failed to read status response from tombstoned: timeout reached?
+
+----- Waiting Channels: pid 4891 at 2026-08-28 08:38:33.433753598+0800 -----
+Cmd line: com.example
+
+sysTid=4891      state=S    binder_thread_read
+----- end 4891 -----
+"#;
+        let report = parse_anr(sample).expect("a wait-channel dump parses");
+        assert_eq!(report.pid, 4891);
+        assert_eq!(report.process_name, "com.example");
+        assert_eq!(
+            report.timestamp.as_deref(),
+            Some("2026-08-28 08:38:33.433753598+0800")
         );
     }
 }

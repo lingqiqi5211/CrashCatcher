@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -243,7 +243,10 @@ fn ingest_source(core: &DaemonCore, sender: &Sender<CrashFragment>, source: Disc
         return;
     }
     match fragment_from_source(&source) {
+        // A successful read clears an earlier failure. Nothing else does it on this path, so
+        // one bad file used to impair the collector until a fresh crash of that kind arrived.
         Ok(Some(mut fragment)) => {
+            core.clear_collector_error(health_source);
             fragment.source_key = Some(source.identity.key.clone());
             if sender.send(fragment).is_err() {
                 core.mark_collector_error(health_source, "ingest queue disconnected");
@@ -255,9 +258,19 @@ fn ingest_source(core: &DaemonCore, sender: &Sender<CrashFragment>, source: Disc
         // as a fault painted the whole DropBox collector as broken the first time the
         // watcher saw any of them — and it stayed that way.
         Ok(None) => {
+            core.clear_collector_error(health_source);
             let _ = core.mark_source_ingested(&source.identity.key);
         }
-        Err(error) => core.mark_collector_error(health_source, error),
+        // The collector card shows only that a source is impaired; without this line the
+        // reason existed nowhere on the device.
+        Err(error) => {
+            warn!(
+                path = %source.preferred_path.display(),
+                %error,
+                "artifact read failed",
+            );
+            core.mark_collector_error(health_source, error);
+        }
     }
 }
 
@@ -272,8 +285,8 @@ fn fragment_from_source(source: &DiscoveredSource) -> Result<Option<CrashFragmen
         WatchKind::Dropbox => {
             dropbox_fragment(parse_dropbox(&source.preferred_path).map_err(|e| e.to_string())?)
         }
-        WatchKind::Tombstone => tombstone_fragment(source).map(Some),
-        WatchKind::Anr => anr_fragment(source).map(Some),
+        WatchKind::Tombstone => tombstone_fragment(source),
+        WatchKind::Anr => anr_fragment(source),
     }
 }
 
@@ -348,17 +361,22 @@ fn dropbox_fragment(entry: DropboxEntry) -> Result<Option<CrashFragment>, String
     Ok(Some(fragment))
 }
 
-fn tombstone_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String> {
+fn tombstone_fragment(source: &DiscoveredSource) -> Result<Option<CrashFragment>, String> {
     let bytes = read_limited(&source.preferred_path)?;
-    let report = if source
-        .preferred_path
-        .extension()
-        .is_some_and(|extension| extension == "pb")
-    {
-        parse_proto(&bytes).map_err(|error| error.to_string())?
-    } else {
-        parse_text(&bytes).map_err(|error| error.to_string())?
+    // tombstoned sizes the numbered file before filling it, so a reboot mid-write leaves a
+    // full-length run of zeroes — read perfectly, holding nothing. Not a collector fault,
+    // but worth a line: it is the answer to why a native crash left no record.
+    if is_blank(&bytes) {
+        warn!(
+            path = %source.preferred_path.display(),
+            "skipping zero-filled tombstone",
+        );
+        return Ok(None);
+    }
+    let Some(parsed) = read_tombstone_report(source, &bytes) else {
+        return Ok(None);
     };
+    let report = parsed.report;
     let mut fragment = CrashFragment::new(
         SourceMask::TOMBSTONE,
         if report.format == TombstoneFormat::Protobuf {
@@ -375,16 +393,90 @@ fn tombstone_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String
     fragment.user_id = report.uid.map(android_user_id);
     apply_native_report(&mut fragment, &report);
     fragment.payload = if report.format == TombstoneFormat::Text {
-        FragmentPayload::File(source.preferred_path.clone())
+        // The half that actually parsed, which is not always the preferred one.
+        FragmentPayload::File(parsed.path)
     } else {
         FragmentPayload::Inline(render_tombstone(&report).into_bytes())
     };
-    Ok(fragment)
+    Ok(Some(fragment))
 }
 
-fn anr_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String> {
+/// A parsed tombstone and the half of the pair it came from.
+struct ParsedTombstone {
+    report: TombstoneReport,
+    path: PathBuf,
+}
+
+/// Reads a tombstone, falling back to the other half of the pair.
+///
+/// One crash is written as `tombstone_NN` and `tombstone_NN.pb`, and damage need not hit both.
+/// `None` means neither half parsed: a broken artefact, not an impaired collector.
+fn read_tombstone_report(source: &DiscoveredSource, bytes: &[u8]) -> Option<ParsedTombstone> {
+    let mut last_error = match parse_tombstone_bytes(&source.preferred_path, bytes) {
+        Ok(report) => {
+            return Some(ParsedTombstone {
+                report,
+                path: source.preferred_path.clone(),
+            });
+        }
+        Err(error) => error,
+    };
+    if source.path != source.preferred_path
+        && let Ok(alternate) = read_limited(&source.path)
+        && !is_blank(&alternate)
+    {
+        match parse_tombstone_bytes(&source.path, &alternate) {
+            Ok(report) => {
+                return Some(ParsedTombstone {
+                    report,
+                    path: source.path.clone(),
+                });
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    warn!(
+        path = %source.preferred_path.display(),
+        error = %last_error,
+        "skipping unreadable tombstone",
+    );
+    None
+}
+
+fn parse_tombstone_bytes(path: &Path, bytes: &[u8]) -> Result<TombstoneReport, String> {
+    if path.extension().is_some_and(|extension| extension == "pb") {
+        parse_proto(bytes).map_err(|error| error.to_string())
+    } else {
+        parse_text(bytes).map_err(|error| error.to_string())
+    }
+}
+
+/// True for a file holding nothing but zero bytes, an empty one included.
+fn is_blank(bytes: &[u8]) -> bool {
+    bytes.iter().all(|byte| *byte == 0)
+}
+
+fn anr_fragment(source: &DiscoveredSource) -> Result<Option<CrashFragment>, String> {
     let bytes = read_limited(&source.preferred_path)?;
-    let report = parse_anr(&bytes).map_err(|error| error.to_string())?;
+    // Same story as a tombstone: a dump cut short by a reboot is a run of zeroes.
+    if is_blank(&bytes) {
+        warn!(
+            path = %source.preferred_path.display(),
+            "skipping zero-filled ANR dump",
+        );
+        return Ok(None);
+    }
+    let report = match parse_anr(&bytes) {
+        Ok(report) => report,
+        Err(error) => {
+            warn!(
+                path = %source.preferred_path.display(),
+                %error,
+                "skipping unreadable ANR dump",
+            );
+            return Ok(None);
+        }
+    };
     let mut fragment = CrashFragment::new(
         SourceMask::ANR_FILE,
         EvidenceQuality::Artifact,
@@ -402,7 +494,7 @@ fn anr_fragment(source: &DiscoveredSource) -> Result<CrashFragment, String> {
         .map(|frame| vec![frame.to_owned()])
         .unwrap_or_default();
     fragment.payload = FragmentPayload::File(source.preferred_path.clone());
-    Ok(fragment)
+    Ok(Some(fragment))
 }
 
 fn apply_java_report(fragment: &mut CrashFragment, report: &CrashBufferReport) {
@@ -1028,6 +1120,62 @@ mod tests {
         let rendered = render_tombstone(&report);
         assert!(rendered.contains("SIGSEGV"));
         assert!(rendered.contains("com.example"));
+    }
+
+    /// A pair of slots that never got their contents is a damaged artefact, not a broken
+    /// collector — the read works, so reporting it as a fault left the source permanently
+    /// impaired: every start-up rescanned the same files and failed the same way.
+    #[test]
+    fn a_zero_filled_tombstone_is_skipped_rather_than_reported_as_a_fault() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = dir.path().join("tombstone_01");
+        let proto = dir.path().join("tombstone_01.pb");
+        fs::write(&text, [0_u8; 512]).expect("text slot");
+        fs::write(&proto, [0_u8; 256]).expect("proto slot");
+
+        let source = DiscoveredSource {
+            kind: WatchKind::Tombstone,
+            path: text,
+            preferred_path: proto,
+            identity: cch_watcher::SourceIdentity {
+                key: "tombstone:tombstone_01:0:256".to_owned(),
+                size: 256,
+                modified_ns: 0,
+            },
+        };
+        assert!(matches!(fragment_from_source(&source), Ok(None)));
+    }
+
+    /// The protobuf half is preferred, but only one of the two has to survive.
+    #[test]
+    fn a_damaged_protobuf_half_falls_back_to_the_text_half() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = dir.path().join("tombstone_02");
+        let proto = dir.path().join("tombstone_02.pb");
+        fs::write(
+            &text,
+            b"pid: 4242, tid: 4243, name: worker  >>> com.example <<<\n\
+              uid: 1010123\n\
+              signal 11 (SIGSEGV), code 1 (SEGV_MAPERR)\n",
+        )
+        .expect("text slot");
+        fs::write(&proto, [0xff_u8; 64]).expect("proto slot");
+
+        let source = DiscoveredSource {
+            kind: WatchKind::Tombstone,
+            path: text.clone(),
+            preferred_path: proto,
+            identity: cch_watcher::SourceIdentity {
+                key: "tombstone:tombstone_02:0:64".to_owned(),
+                size: 64,
+                modified_ns: 0,
+            },
+        };
+        let fragment = fragment_from_source(&source)
+            .expect("readable")
+            .expect("a crash");
+        assert_eq!(fragment.package_name.as_deref(), Some("com.example"));
+        assert_eq!(fragment.payload, FragmentPayload::File(text));
     }
 
     #[test]
