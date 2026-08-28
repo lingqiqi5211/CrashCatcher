@@ -14,6 +14,15 @@ if [ ! -f "$STATE_DIR/takeover.previous" ]; then
   atomic_write "$STATE_DIR/takeover.previous" "$previous_takeover"
 fi
 
+# Registered before any of the checks below can exit. .boot_ok is what tells the next boot's
+# guard that this one finished; a launcher that gives up on a bad pin or a missing binary never
+# influenced the boot at all, and must not leave behind the signature of one that hung it.
+(
+  while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done
+  boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+  [ -n "$boot_id" ] && atomic_write "$STATE_DIR/.boot_ok" "$boot_id"
+) &
+
 pin="$MODDIR/config/manager_signing_cert.sha256"
 if ! validate_manager_pin "$pin"; then
   set_module_status "❌ 已停止"
@@ -40,12 +49,6 @@ if [ ! -x "$daemon" ]; then
   service_log "no daemon binary for $ABI at $daemon"
   exit 1
 fi
-
-(
-  while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done
-  boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
-  [ -n "$boot_id" ] && atomic_write "$STATE_DIR/.boot_ok" "$boot_id"
-) &
 
 # Keep the previous boot's logs. The crash being chased is often the one that made the device
 # reboot, and its evidence is in the session that ended — which the daemon would otherwise
