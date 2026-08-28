@@ -1,6 +1,8 @@
 package io.github.lingqiqi5211.crashcatcher.ui.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,6 +43,8 @@ import io.github.lingqiqi5211.crashcatcher.ui.components.StatusTag
 import io.github.lingqiqi5211.crashcatcher.ui.components.StatusTagTone
 import io.github.lingqiqi5211.crashcatcher.ui.components.TonalCard
 import io.github.lingqiqi5211.crashcatcher.ui.components.crashCatcherContentScaffoldPadding
+import io.github.lingqiqi5211.crashcatcher.ui.util.formatTimestamp
+import io.github.lingqiqi5211.meowui.component.MeowAlertDialog
 import io.github.lingqiqi5211.meowui.component.MeowPreferenceScreen
 import io.github.lingqiqi5211.meowui.theme.MeowIcons
 import io.github.lingqiqi5211.meowui.theme.MeowTheme
@@ -315,6 +324,9 @@ private fun HomeSectionTitle(text: String) {
 private fun CollectorCard(collectors: List<CollectorHealth>) {
     if (collectors.isEmpty()) return
 
+    // Which row's dialog is open, by source name so it survives a rotation.
+    var opened by rememberSaveable { mutableStateOf<String?>(null) }
+
     HomeSectionTitle(stringResource(R.string.home_section_collectors))
     TonalCard(
         modifier = Modifier
@@ -326,6 +338,13 @@ private fun CollectorCard(collectors: List<CollectorHealth>) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    // No indication. A ripple keyed to the row paints a rectangle inside a
+                    // rounded card, and Material's is the wrong one under the Miuix skin
+                    // regardless — the dialog is the feedback.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { opened = collector.source.name }
                     .padding(vertical = 10.dp)
                     .testTag("crashcatcher.home.collector.${collector.source.name}"),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -342,6 +361,8 @@ private fun CollectorCard(collectors: List<CollectorHealth>) {
                         maxLines = 1,
                     )
                     collector.detail?.let { detail ->
+                        // Two lines name the kind of failure; the whole daemon message runs
+                        // well past a phone width and belongs in the dialog.
                         Text(
                             text = detail,
                             style = MeowTheme.typography.summary,
@@ -355,14 +376,7 @@ private fun CollectorCard(collectors: List<CollectorHealth>) {
                 // what a device with no crashes of that kind looks like. Only being
                 // switched off, or an error the daemon recorded, earns a warning.
                 StatusTag(
-                    text = stringResource(
-                        when {
-                            !collector.enabled -> R.string.collector_disabled
-                            collector.detail != null -> R.string.collector_error
-                            collector.everReceived -> R.string.collector_receiving
-                            else -> R.string.collector_idle
-                        },
-                    ),
+                    text = stringResource(collector.stateRes),
                     tone = when {
                         collector.isImpaired -> StatusTagTone.Warning
                         collector.everReceived -> StatusTagTone.Success
@@ -372,6 +386,41 @@ private fun CollectorCard(collectors: List<CollectorHealth>) {
             }
         }
     }
+
+    val target = collectors.firstOrNull { it.source.name == opened }
+    // Held past the dismissal so the dialog animates out with its text intact rather than
+    // emptying first.
+    var shown by remember { mutableStateOf<CollectorHealth?>(null) }
+    if (target != null) shown = target
+    shown?.let { collector ->
+        MeowAlertDialog(
+            show = target != null,
+            title = stringResource(collector.source.labelRes),
+            message = collectorReport(collector),
+            confirmText = stringResource(R.string.action_confirm),
+            cancelText = null,
+            onConfirm = { opened = null },
+            onDismissRequest = { opened = null },
+        )
+    }
+}
+
+/**
+ * What one collector has actually been doing, as dialog body text.
+ *
+ * The error is the reason the dialog exists: the row can only show two lines of it, and the
+ * daemon's message is the sole account of why a source went quiet.
+ */
+@Composable
+private fun collectorReport(collector: CollectorHealth): String {
+    val state = stringResource(collector.stateRes)
+    val lastReceived = collector.lastReceivedMs
+        ?.let { formatTimestamp(it) }
+        ?: stringResource(R.string.collector_never_received)
+    val header = stringResource(R.string.collector_dialog_state, state) +
+        "\n" +
+        stringResource(R.string.collector_dialog_last_received, lastReceived)
+    return collector.detail?.let { "$header\n\n$it" } ?: header
 }
 
 @Composable
@@ -443,6 +492,15 @@ private fun HomeUiState.supportingText(): String = when (runtimeStatus) {
         stats.valueOrNull?.total ?: 0,
     )
 }
+
+/** Shared by the row's tag and the dialog's header so the two cannot disagree. */
+private val CollectorHealth.stateRes: Int
+    get() = when {
+        !enabled -> R.string.collector_disabled
+        detail != null -> R.string.collector_error
+        everReceived -> R.string.collector_receiving
+        else -> R.string.collector_idle
+    }
 
 private val CollectorSource.labelRes: Int
     get() = when (this) {

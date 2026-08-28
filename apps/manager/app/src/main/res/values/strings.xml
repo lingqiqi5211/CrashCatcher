@@ -32,6 +32,8 @@
     <string name="collector_tombstone">Tombstone</string>
     <string name="collector_anr_file">ANR 转储</string>
     <string name="collector_never_received">尚未收到数据</string>
+    <string name="collector_dialog_state">状态：%1$s</string>
+    <string name="collector_dialog_last_received">最近收到：%1$s</string>
     <string name="collector_idle">暂未触发</string>
     <string name="collector_error">读取受阻</string>
     <string name="collector_disabled">已关闭</string>
