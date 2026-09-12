@@ -189,6 +189,39 @@ impl Store {
         Ok(generator.next(u64::try_from(at_ms).unwrap_or(0)))
     }
 
+    /// Hands back the disk the index is no longer using. Start-up only: `VACUUM` wants the
+    /// database to itself.
+    ///
+    /// The checkpoint is unconditional and comes first. The freelist is read *through* the log, so
+    /// a `VACUUM` still sitting in an un-checkpointed one leaves the next start seeing a compact
+    /// database beside a file that is not, and skipping this forever. `TRUNCATE` also drops the
+    /// log, which never shrinks on its own.
+    ///
+    /// `VACUUM` is then gated on the freelist being a large share of a large file: rewriting the
+    /// whole database every boot to reclaim a few pages costs more than it saves.
+    pub fn compact(&self) -> Result<(), StoreError> {
+        const MIN_FREE_PAGES: i64 = 512;
+        const FREE_SHARE_DIVISOR: i64 = 4;
+
+        let connection = self.connection()?;
+        connection.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+
+        let free: i64 = connection.pragma_query_value(None, "freelist_count", |row| row.get(0))?;
+        let total: i64 = connection.pragma_query_value(None, "page_count", |row| row.get(0))?;
+        if free < MIN_FREE_PAGES || free < total / FREE_SHARE_DIVISOR {
+            return Ok(());
+        }
+        connection.execute_batch("VACUUM")?;
+        // The rebuild is a transaction like any other, so it lands in the log too.
+        connection.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        info!(
+            free_pages = free,
+            total_pages = total,
+            "compacted the index"
+        );
+        Ok(())
+    }
+
     /// Points the id generator past the largest id in the index.
     ///
     /// `MAX(id)` is the right question because ids sort lexicographically in the same

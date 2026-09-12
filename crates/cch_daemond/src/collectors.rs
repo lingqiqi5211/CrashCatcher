@@ -36,10 +36,18 @@ const MERGE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOG_READER_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 #[cfg(target_os = "android")]
 const LOG_HISTORY_GRACE_MS: i64 = 10_000;
+// One-time bookkeeping, not evidence about an artefact, so it lives outside the `logd:`
+// namespace: retention ages `logd:` keys out after a day, and a marker that expired would let
+// the next start replay the whole log buffer as fresh crashes. The `logd:`-prefixed spellings
+// are what earlier builds wrote and are still honoured once, so an upgrade does not re-migrate.
 #[cfg(target_os = "android")]
-const EVENTS_LOG_MIGRATION_KEY: &str = "logd:events:durable-source-keys:v1";
+const EVENTS_LOG_MIGRATION_KEY: &str = "marker:events:durable-source-keys:v1";
 #[cfg(target_os = "android")]
-const CRASH_LOG_MIGRATION_KEY: &str = "logd:crash:durable-source-keys:v1";
+const EVENTS_LOG_MIGRATION_KEY_LEGACY: &str = "logd:events:durable-source-keys:v1";
+#[cfg(target_os = "android")]
+const CRASH_LOG_MIGRATION_KEY: &str = "marker:crash:durable-source-keys:v1";
+#[cfg(target_os = "android")]
+const CRASH_LOG_MIGRATION_KEY_LEGACY: &str = "logd:crash:durable-source-keys:v1";
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 type PendingSourceConfirmation = (Option<CollectorSource>, String);
 
@@ -718,11 +726,24 @@ struct LogReplayMigration {
 
 #[cfg(target_os = "android")]
 impl LogReplayMigration {
-    fn new(core: &DaemonCore, marker: &'static str) -> Self {
+    fn new(
+        core: &DaemonCore,
+        source: CollectorSource,
+        marker: &'static str,
+        legacy_marker: &'static str,
+    ) -> Self {
+        let done = |key: &str| matches!(core.was_source_ingested(key), Ok(true));
+        // An install that already migrated recorded it under the old key. Re-stamp it in the
+        // namespace retention leaves alone rather than replaying the buffer a second time.
+        let migrated = done(marker)
+            || (done(legacy_marker) && {
+                confirm_processed_log_source(core, source, marker);
+                true
+            });
         Self {
             cutoff_ms: now_ms().saturating_sub(LOG_HISTORY_GRACE_MS),
             marker,
-            active: !matches!(core.was_source_ingested(marker), Ok(true)),
+            active: !migrated,
         }
     }
 
@@ -776,7 +797,12 @@ fn spawn_events_loop(
         .name("ct-log-events".to_owned())
         .spawn(move || {
             use cch_logd::{parse_activity_event, parse_event_payload, parse_screen_event};
-            let mut replay = LogReplayMigration::new(&core, EVENTS_LOG_MIGRATION_KEY);
+            let mut replay = LogReplayMigration::new(
+                &core,
+                CollectorSource::Events,
+                EVENTS_LOG_MIGRATION_KEY,
+                EVENTS_LOG_MIGRATION_KEY_LEGACY,
+            );
             let mut seen = HashSet::new();
             run_log_reader(
                 &core,
@@ -867,7 +893,12 @@ fn spawn_crash_loop(
         .name("ct-log-crash".to_owned())
         .spawn(move || {
             use cch_logd::TextLogEntry;
-            let mut replay = LogReplayMigration::new(&core, CRASH_LOG_MIGRATION_KEY);
+            let mut replay = LogReplayMigration::new(
+                &core,
+                CollectorSource::CrashBuffer,
+                CRASH_LOG_MIGRATION_KEY,
+                CRASH_LOG_MIGRATION_KEY_LEGACY,
+            );
             let mut seen = HashSet::new();
             run_log_reader(
                 &core,

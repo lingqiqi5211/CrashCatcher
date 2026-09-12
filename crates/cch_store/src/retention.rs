@@ -7,6 +7,13 @@ use crate::{Store, StoreError};
 
 const MS_PER_DAY: i64 = 24 * 60 * 60 * 1000;
 
+/// How long a `logd:` dedup key is worth keeping.
+///
+/// It names one entry in a log ring buffer, which holds seconds on a busy device and can hold
+/// yesterday on an idle one. Past that the entry has scrolled out and the key guards nothing;
+/// a restart into a buffer older than this falls to the companion check in `companion_record`.
+const LOG_SOURCE_KEY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// What one sweep reclaimed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SweepOutcome {
@@ -15,6 +22,8 @@ pub struct SweepOutcome {
     /// Records whose payload was dropped while the row itself survived.
     pub evicted_payloads: u64,
     pub reclaimed_bytes: u64,
+    /// Dedup keys dropped because the artefact they name can no longer be re-read.
+    pub removed_source_keys: u64,
 }
 
 impl SweepOutcome {
@@ -24,6 +33,7 @@ impl SweepOutcome {
             && self.removed_groups == 0
             && self.evicted_payloads == 0
             && self.reclaimed_bytes == 0
+            && self.removed_source_keys == 0
     }
 }
 
@@ -69,16 +79,45 @@ impl Store {
         outcome.evicted_payloads = evicted;
         outcome.reclaimed_bytes = reclaimed;
 
+        outcome.removed_source_keys = self.prune_ingested_sources(now_ms, cutoff_ms)?;
+
         if !outcome.did_nothing() {
             debug!(
                 removed_records = outcome.removed_records,
                 removed_groups = outcome.removed_groups,
                 evicted_payloads = outcome.evicted_payloads,
                 reclaimed_bytes = outcome.reclaimed_bytes,
+                removed_source_keys = outcome.removed_source_keys,
                 "retention sweep"
             );
         }
         Ok(outcome)
+    }
+
+    /// Drops dedup keys whose source artefact can no longer be re-read.
+    ///
+    /// A key's job ends when its artefact does, and the two kinds die on different schedules:
+    /// `logd:` names a ring-buffer entry ([`LOG_SOURCE_KEY_TTL_MS`]), while DropBox entries,
+    /// tombstones and ANR dumps are files the platform keeps for days, so those ride the
+    /// configured window. `marker:` keys are one-time bookkeeping and never age out — re-running
+    /// what they guard would re-import the log buffer as fresh crashes.
+    fn prune_ingested_sources(
+        &self,
+        now_ms: i64,
+        artifact_cutoff_ms: i64,
+    ) -> Result<u64, StoreError> {
+        let log_cutoff_ms = now_ms.saturating_sub(LOG_SOURCE_KEY_TTL_MS);
+        let connection = self.connection()?;
+        let removed = connection.execute(
+            "DELETE FROM ingested_source
+             WHERE source_key NOT LIKE 'marker:%'
+               AND ingested_at_ms < CASE
+                     WHEN source_key LIKE 'logd:%' THEN ?1
+                     ELSE ?2
+                   END",
+            params![log_cutoff_ms, artifact_cutoff_ms],
+        )?;
+        Ok(removed as u64)
     }
 
     /// Deletes matching records, unlinking their payloads first.
@@ -566,6 +605,89 @@ mod tests {
         assert_eq!(
             outcome.removed_records, 0,
             "clamping to a one-day minimum must protect today's records"
+        );
+    }
+
+    /// Un-pruned these are one row per log line read, which is most of what the index holds.
+    #[test]
+    fn log_dedup_keys_do_not_outlive_the_buffer_they_guard() {
+        let store = TestStore::new();
+        let now = 40 * MS_PER_DAY;
+        for age_days in [0, 2, 30] {
+            store
+                .store
+                .mark_ingested(
+                    &format!("logd:events:{age_days}:1:2:3:30040"),
+                    now - age_days * MS_PER_DAY,
+                )
+                .expect("marks");
+        }
+
+        let outcome = store
+            .store
+            .sweep(now, RetentionPolicy::default())
+            .expect("sweeps");
+
+        assert_eq!(outcome.removed_source_keys, 2, "only today's key survives");
+        assert!(
+            store
+                .store
+                .was_ingested("logd:events:0:1:2:3:30040")
+                .expect("checks")
+        );
+    }
+
+    /// A DropBox entry or a tombstone sits on disk for days, so its key has to sit there too —
+    /// dropping it early is what turns the next rescan into a duplicate record.
+    #[test]
+    fn file_dedup_keys_ride_the_retention_window_instead() {
+        let store = TestStore::new();
+        let now = 100 * MS_PER_DAY;
+        store
+            .store
+            .mark_ingested("dropbox:data_app_crash@1.txt:9:10", now - 10 * MS_PER_DAY)
+            .expect("marks");
+        store
+            .store
+            .mark_ingested("tombstone:tombstone_07:9:10", now - 90 * MS_PER_DAY)
+            .expect("marks");
+
+        let outcome = store
+            .store
+            .sweep(now, RetentionPolicy::default())
+            .expect("sweeps");
+
+        assert_eq!(outcome.removed_source_keys, 1);
+        assert!(
+            store
+                .store
+                .was_ingested("dropbox:data_app_crash@1.txt:9:10")
+                .expect("checks"),
+            "ten days is inside the default thirty-day window"
+        );
+    }
+
+    /// The collectors' one-time replay markers are bookkeeping, not evidence about an artefact.
+    /// Ageing one out would let the next start import the whole log buffer as fresh crashes.
+    #[test]
+    fn replay_markers_are_never_pruned() {
+        let store = TestStore::new();
+        let now = 400 * MS_PER_DAY;
+        store
+            .store
+            .mark_ingested("marker:events:durable-source-keys:v1", 0)
+            .expect("marks");
+
+        store
+            .store
+            .sweep(now, RetentionPolicy::default())
+            .expect("sweeps");
+
+        assert!(
+            store
+                .store
+                .was_ingested("marker:events:durable-source-keys:v1")
+                .expect("checks")
         );
     }
 }
