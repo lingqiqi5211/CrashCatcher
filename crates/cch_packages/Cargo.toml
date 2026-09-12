@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-quick-xml = "0.38"
+quick-xml = "0.42"
 serde = { workspace = true }
 thiserror = { workspace = true }
 

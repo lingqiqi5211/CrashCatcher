@@ -10,7 +10,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-libloading = "0.8"
+libloading = "0.9"
 
 [lints]
 workspace = true

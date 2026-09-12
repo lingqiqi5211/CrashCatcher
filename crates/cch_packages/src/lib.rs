@@ -1,7 +1,7 @@
 //! Joins PackageManager's UID index with its authoritative APK code paths.
 
 #![forbid(unsafe_code)]
-use quick_xml::{Reader, events::Event};
+use quick_xml::{Reader, XmlVersion, events::Event};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -264,19 +264,23 @@ fn parse_code_paths<R: BufRead>(input: R) -> Result<HashMap<String, PathBuf>, Pa
     let mut out = HashMap::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"package" => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == "package" => {
                 let mut name = None;
                 let mut path = None;
                 for a in e.attributes().with_checks(true) {
                     let a = a.map_err(|x| PackageError::InvalidXml(x.to_string()))?;
                     let value = || {
-                        a.decode_and_unescape_value(reader.decoder())
+                        // `packages.xml` carries no XML declaration, which is the case the
+                        // implicit version is for. Naming it explicitly rather than reading one
+                        // off the reader: attribute-value normalisation differs between 1.0 and
+                        // 1.1 only for the line endings this file does not contain.
+                        a.normalized_value(XmlVersion::Implicit1_0)
                             .map(|v| v.into_owned())
                             .map_err(|x| PackageError::InvalidXml(x.to_string()))
                     };
                     match a.key.as_ref() {
-                        b"name" => name = Some(value()?),
-                        b"codePath" => path = Some(PathBuf::from(value()?)),
+                        "name" => name = Some(value()?),
+                        "codePath" => path = Some(PathBuf::from(value()?)),
                         _ => {}
                     }
                 }
