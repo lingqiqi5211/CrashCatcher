@@ -2,15 +2,11 @@ package io.github.lingqiqi5211.crashcatcher.ui.shell
 
 import android.content.Intent
 import android.os.Build
-import androidx.compose.animation.core.EaseInOut
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -22,15 +18,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.core.net.toUri
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.lingqiqi5211.crashcatcher.R
@@ -38,6 +34,7 @@ import io.github.lingqiqi5211.crashcatcher.data.daemon.AppEntry
 import io.github.lingqiqi5211.crashcatcher.data.daemon.GroupSummary
 import io.github.lingqiqi5211.crashcatcher.data.daemon.RecordId
 import io.github.lingqiqi5211.crashcatcher.data.daemon.RecordSummary
+import io.github.lingqiqi5211.crashcatcher.ui.components.CrashCatcherEmptyState
 import io.github.lingqiqi5211.crashcatcher.ui.components.LocalCrashCatcherContentBottomPadding
 import io.github.lingqiqi5211.crashcatcher.ui.components.LocalCrashCatcherContentTopPadding
 import io.github.lingqiqi5211.crashcatcher.ui.apps.AppDetailActions
@@ -85,19 +82,22 @@ import io.github.lingqiqi5211.crashcatcher.ui.settings.RuntimeLogActions
 import io.github.lingqiqi5211.crashcatcher.ui.settings.RuntimeLogPage
 import io.github.lingqiqi5211.crashcatcher.ui.settings.SettingsViewModel
 import io.github.lingqiqi5211.crashcatcher.ui.settings.StorageSettingsPage
-import kotlin.math.abs
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import io.github.lingqiqi5211.crashcatcher.ui.theme.LocalCrashCatcherPredictiveBack
 import io.github.lingqiqi5211.crashcatcher.ui.components.crashCatcherContentScaffoldPadding
 import io.github.lingqiqi5211.meowui.theme.MeowIcons
+import io.github.lingqiqi5211.meowui.component.MeowAdaptiveLayout
+import io.github.lingqiqi5211.meowui.component.MeowCompactPane
 import io.github.lingqiqi5211.meowui.component.MeowMenuItem
 import io.github.lingqiqi5211.meowui.component.MeowNavHost
+import io.github.lingqiqi5211.meowui.component.MeowNavigationPager
+import io.github.lingqiqi5211.meowui.component.rememberMeowNavigationSelection
 import io.github.lingqiqi5211.meowui.component.MeowPreferenceScreen
 import io.github.lingqiqi5211.meowui.component.MeowScaffold
 import io.github.lingqiqi5211.meowui.component.MeowTopBarAction
+import io.github.lingqiqi5211.meowui.component.MeowWindowHeight
+import io.github.lingqiqi5211.meowui.component.MeowWindowWidth
 import io.github.lingqiqi5211.meowui.component.rememberMeowSnackbarState
 
 /**
@@ -141,23 +141,29 @@ internal fun CrashCatcherApp(
     // close that arrives one time too many must not be able to take the app down.
     val pop = { if (backStack.size > 1) backStack = backStack.dropLast(1) }
 
-    MeowNavHost(
-        backStack = backStack,
-        modifier = modifier.fillMaxSize(),
-        onBack = pop,
-        predictiveBackEnabled = LocalCrashCatcherPredictiveBack.current,
-    ) { page ->
+    // A root list *replaces* the detail: it belongs to the selected row, and with both halves on
+    // screen that row can be tapped again while already open. MeowNavHost refuses a page twice on
+    // the stack — `Duplicate contentKey`, the route value being NavDisplay's saved-state identity.
+    val openFromRoot: (Page) -> Unit = { backStack = listOf(Page.Shell, it) }
+
+    // Pushes from inside a detail do stack, so back walks them. Guarded against the same duplicate.
+    val push: (Page) -> Unit = { if (it !in backStack) backStack = backStack + it }
+
+    val page: @Composable (Page) -> Unit = { page ->
         when (page) {
+            is Page.DetailPlaceholder -> EmptyDetailPane()
+
             is Page.Shell -> RootShell(
                 factory = factory,
-                onPush = { backStack = backStack + it },
+                onPush = openFromRoot,
+                onDestinationSelected = { backStack = listOf(Page.Shell) },
             )
 
             is Page.GroupDetail -> GroupDetailPage(
                 factory = factory,
                 groupId = page.groupId,
                 onBack = pop,
-                onOpenRecord = { record -> backStack = backStack + Page.RecordDetail(record.id) },
+                onOpenRecord = { record -> push(Page.RecordDetail(record.id)) },
             )
 
             is Page.RecordDetail -> RecordDetailPage(
@@ -171,7 +177,7 @@ internal fun CrashCatcherApp(
                 packageName = page.packageName,
                 userId = page.userId,
                 onBack = pop,
-                onOpenGroup = { group -> backStack = backStack + Page.GroupDetail(group.groupId) },
+                onOpenGroup = { group -> push(Page.GroupDetail(group.groupId)) },
             )
 
             is Page.Appearance -> {
@@ -219,7 +225,7 @@ internal fun CrashCatcherApp(
                         device = remember { readDeviceInfo() },
                         actions = DiagnosticsActions(
                             onDebugLoggingChange = actions.onDebugLoggingChange,
-                            onOpenLog = { backStack = backStack + Page.RuntimeLog },
+                            onOpenLog = { push(Page.RuntimeLog) },
                             // The report plus every log file, as one archive. Reading them all
                             // takes a request each, so it runs off the main thread.
                             onShareReport = { report ->
@@ -271,7 +277,64 @@ internal fun CrashCatcherApp(
             }
         }
     }
+
+    val pushed = backStack.drop(1)
+    val predictiveBack = LocalCrashCatcherPredictiveBack.current
+
+    MeowAdaptiveLayout(
+        compactPane = MeowCompactPane.List,
+        modifier = modifier.fillMaxSize(),
+        expandedBreakpoint = MeowWindowWidth.Expanded,
+        expandedMinHeight = MeowWindowHeight.Medium,
+        listPaneWidth = ListPaneWidth,
+        listPane = { page(Page.Shell) },
+        detailPane = {
+            // Its own host: a group opens a record, and that push belongs inside the pane. The
+            // placeholder rides the bottom of that stack so opening the first detail and closing
+            // the last one animate like any other push and pop.
+            MeowNavHost(
+                backStack = listOf(Page.DetailPlaceholder) + pushed,
+                // Null while only the placeholder is showing: a host that registers back handling
+                // there would swallow the gesture that should leave the app.
+                onBack = pop.takeIf { pushed.isNotEmpty() },
+                predictiveBackEnabled = predictiveBack,
+                content = page,
+            )
+        },
+        compactContent = {
+            MeowNavHost(
+                backStack = backStack,
+                onBack = pop,
+                predictiveBackEnabled = predictiveBack,
+                content = page,
+            )
+        },
+    )
 }
+
+/** How wide the list column is when the window is split. */
+private val ListPaneWidth = 400.dp
+
+/** The detail half before anything has been opened. */
+@Composable
+private fun EmptyDetailPane() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag(EmptyDetailPaneTag),
+        contentAlignment = Alignment.Center,
+    ) {
+        CrashCatcherEmptyState(
+            testTag = "crashcatcher.pane.detail.empty.state",
+            title = stringResource(R.string.detail_pane_empty),
+            description = stringResource(R.string.detail_pane_empty_description),
+            icon = MeowIcons.Crashes,
+        )
+    }
+}
+
+/** Test handle for the detail pane's resting state. */
+internal const val EmptyDetailPaneTag = "crashcatcher.pane.detail.empty"
 
 /**
  * Hosts a settings sub-page against its own `SettingsViewModel`.
@@ -295,59 +358,20 @@ private fun SettingsSubPage(
 private fun RootShell(
     factory: AppViewModelFactory,
     onPush: (Page) -> Unit,
+    onDestinationSelected: () -> Unit = {},
 ) {
     val destinations = Destination.entries
-    // The pager is the single source of truth for which tab is showing; the bar
-    // follows it. Holding a second copy of the selection would let the two disagree
-    // mid-swipe.
-    var selected by rememberSaveable { mutableStateOf(0) }
-    val pagerState = rememberPagerState(
-        initialPage = selected,
-        pageCount = { destinations.size },
-    )
-    val stateHolder = rememberSaveableStateHolder()
     val layoutDirection = LocalLayoutDirection.current
-    val navigationScope = rememberCoroutineScope()
-    var navigationJob by remember { mutableStateOf<Job?>(null) }
-    // True only while a tap-driven jump is animating. A swipe and a jump want opposite
-    // readings of the pager: see the destination sync below.
-    var jumping by remember { mutableStateOf(false) }
+    // The pager and the bar are one thing and MeowUI owns it: which entry is lit, how a tap moves
+    // the pages, the fade across a jump of more than one tab, the drag threshold.
+    val pagerState = rememberPagerState(pageCount = { destinations.size })
+    val selection = rememberMeowNavigationSelection(pagerState)
 
     val navigateTo: (Destination) -> Unit = { destination ->
-        selected = destination.ordinal
-        navigationJob?.cancel()
-        jumping = true
-        val distance = abs(destination.ordinal - pagerState.currentPage).coerceAtLeast(2)
-        navigationJob = navigationScope.launch {
-            // Deliberately not animateScrollToPage. For a jump of two or more tabs it
-            // teleports to one page short of the target and animates only that last hop,
-            // and `currentPage` flips to each page swept through on the way. The sync
-            // below then wrote that intermediate page back into `selected`, which
-            // restarted this effect against the page the pager had just landed on — so a
-            // two-tab tap stopped one short and stuck there.
-            //
-            // Walking the same distance in pixels keeps every intermediate page on screen
-            // for the whole tween and never retargets. All pages stay composed either way
-            // (beyondViewportPageCount).
-            val pageSize = pagerState.layoutInfo.pageSize + pagerState.layoutInfo.pageSpacing
-            if (pageSize <= 0) {
-                // Nothing has been laid out yet, so there is no distance to travel.
-                pagerState.scrollToPage(destination.ordinal)
-            } else {
-                val from = pagerState.currentPage + pagerState.currentPageOffsetFraction
-                pagerState.animateScrollBy(
-                    value = (destination.ordinal - from) * pageSize,
-                    animationSpec = tween(
-                        durationMillis = 100 * distance + 100,
-                        easing = EaseInOut,
-                    ),
-                )
-                // A pixel walk can stop a fraction short of the boundary, and unlike a
-                // gesture there is no fling to snap it; settle it exactly on the page.
-                pagerState.scrollToPage(destination.ordinal)
-            }
-            jumping = false
-        }
+        // The detail belongs to the tab it was opened from, so changing tab takes it away. Only
+        // reachable with two panes; with one, a pushed page covers the bar it would be tapped on.
+        onDestinationSelected()
+        selection.select(destination.ordinal)
     }
 
     // ViewModels are hoisted here rather than created inside each page so the shell
@@ -364,24 +388,7 @@ private fun RootShell(
     val appsState by appsViewModel.uiState.collectAsStateWithLifecycle()
     val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
 
-    // The bar follows whichever page reading matches how the pager is being moved.
-    //
-    // A swipe crosses one page at a time and `currentPage` flips at the halfway mark,
-    // which is when the bar should light up the page being dragged in. Waiting for the
-    // pager to settle would make the indicator lag a whole gesture behind.
-    //
-    // A tap-driven jump is the opposite: `currentPage` reports every page swept
-    // through, so following it would drag the indicator across the intermediates. Those
-    // jumps read `settledPage` instead — and only while the jump is in flight, so a
-    // settle that lands after it (a swipe back mid-animation, a tap superseding
-    // another) is never dropped.
-    LaunchedEffect(pagerState) {
-        snapshotFlow { if (jumping) pagerState.settledPage else pagerState.currentPage }
-            .distinctUntilChanged()
-            .collect { page -> selected = page }
-    }
-
-    val current = destinations[selected.coerceIn(destinations.indices)]
+    val current = destinations[selection.index.coerceIn(destinations.indices)]
 
     // Reconnect is reachable from two places — the settings row and the disconnected
     // banner on the overview — and neither can report the outcome itself: the row looks
@@ -419,18 +426,15 @@ private fun RootShell(
             LocalCrashCatcherContentTopPadding provides contentPadding.calculateTopPadding(),
             LocalCrashCatcherContentBottomPadding provides contentPadding.calculateBottomPadding(),
         ) {
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag("crashcatcher.shell.pager"),
+            MeowNavigationPager(
+                selection = selection,
+                modifier = Modifier.testTag("crashcatcher.shell.pager"),
                 // Keep every page composed: a tab switch should not discard a list the
                 // user scrolled or a request already in flight.
-                beyondViewportPageCount = destinations.lastIndex,
+                keepPagesAlive = true,
             ) { index ->
                 val destination = destinations[index]
-                stateHolder.SaveableStateProvider(destination.route) {
-                    Box(
+                Box(
                         Modifier.padding(
                             start = contentPadding.calculateStartPadding(layoutDirection),
                             end = contentPadding.calculateEndPadding(layoutDirection),
@@ -463,7 +467,6 @@ private fun RootShell(
                                 onPush = onPush,
                             )
                         }
-                    }
                 }
             }
         }
@@ -761,6 +764,10 @@ private val PageStackSaver = listSaver<MutableState<List<Page>>, String>(
 
 internal fun Page.toRoute(): String = when (this) {
     is Page.Shell -> "shell"
+    // Lives only inside the detail pane and never reaches the saved stack. Deliberately a route
+    // [toPage] does not recognise, so a leak is dropped on restore rather than restored as a
+    // second copy of whatever it mapped onto — which MeowNavHost rejects outright.
+    is Page.DetailPlaceholder -> "detail-placeholder"
     is Page.GroupDetail -> "group/$groupId"
     is Page.RecordDetail -> "record/${id.value}"
     is Page.AppDetail -> "app/$userId/$packageName"

@@ -12,28 +12,11 @@ import io.github.lingqiqi5211.meowui.theme.MeowIcons
 internal enum class Destination(
     val route: String,
     @param:StringRes val labelRes: Int,
-    val testTag: String,
 ) {
-    Home(
-        route = "home",
-        labelRes = R.string.destination_home,
-        testTag = "crashcatcher.nav.home",
-    ),
-    Crashes(
-        route = "crashes",
-        labelRes = R.string.destination_crashes,
-        testTag = "crashcatcher.nav.crashes",
-    ),
-    Apps(
-        route = "apps",
-        labelRes = R.string.destination_apps,
-        testTag = "crashcatcher.nav.apps",
-    ),
-    Settings(
-        route = "settings",
-        labelRes = R.string.destination_settings,
-        testTag = "crashcatcher.nav.settings",
-    ),
+    Home(route = "home", labelRes = R.string.destination_home),
+    Crashes(route = "crashes", labelRes = R.string.destination_crashes),
+    Apps(route = "apps", labelRes = R.string.destination_apps),
+    Settings(route = "settings", labelRes = R.string.destination_settings),
 }
 
 /**
@@ -63,6 +46,16 @@ internal fun Destination.icon(selected: Boolean): ImageVector = when (this) {
 internal sealed interface Page {
     /** Page zero — the whole four-tab shell. */
     data object Shell : Page
+
+    /**
+     * What the two-pane detail half shows before anything is opened.
+     *
+     * A page rather than a branch around the host, so opening the first detail and closing the
+     * last one are an ordinary push and pop, with the transition every other page gets. Never on
+     * the app's own back stack — the pane builds its own from this plus whatever sits above
+     * [Shell] — so it is not a route and never persists.
+     */
+    data object DetailPlaceholder : Page
 
     data class GroupDetail(val groupId: String) : Page
 

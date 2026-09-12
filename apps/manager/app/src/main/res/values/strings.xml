@@ -13,6 +13,10 @@
     <string name="destination_apps">应用</string>
     <string name="destination_settings">设置</string>
 
+    <!-- 双栏详情侧 -->
+    <string name="detail_pane_empty">选择一项查看详情</string>
+    <string name="detail_pane_empty_description">左侧列表里的崩溃、应用或设置项会显示在这里</string>
+
     <!-- Module status card -->
     <string name="status_headline_running">运行中</string>
     <string name="status_headline_degraded">采集受限</string>
