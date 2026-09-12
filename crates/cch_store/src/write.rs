@@ -188,6 +188,195 @@ impl Store {
         })
     }
 
+    /// Every package name the index has a group for.
+    ///
+    /// Tens of rows, not the thousands `packages.list` holds: the caller is re-deciding
+    /// classifications, and only packages that actually crashed have one to re-decide.
+    pub fn group_package_names(&self) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection()?;
+        let mut statement =
+            connection.prepare("SELECT DISTINCT package_name FROM crash_group ORDER BY 1")?;
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names)
+    }
+
+    /// Rewrites the platform/app verdict for groups whose package the caller has since resolved.
+    ///
+    /// The insert only re-resolves it when a group is *seen again*, so a crash that happens once
+    /// keeps whatever the index said at the time — and during early boot the index says every
+    /// package is an ordinary app. The caller passes only what PackageManager has now confirmed.
+    pub fn apply_package_system_flags(&self, flags: &[(String, bool)]) -> Result<u64, StoreError> {
+        if flags.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let mut changed = 0;
+        {
+            let mut statement = transaction.prepare(
+                "UPDATE crash_group SET is_system_app = ?2, package_installed = 1
+                 WHERE package_name = ?1 AND (is_system_app <> ?2 OR package_installed <> 1)",
+            )?;
+            for (name, is_system) in flags {
+                changed += statement.execute(params![name, is_system])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(changed as u64)
+    }
+
+    /// The stored record this one is a second view of, if there is one.
+    ///
+    /// `CrashMerger` only folds fragments alive in the same process at the same time, and the
+    /// artefact collectors rescan `/data/tombstones` from scratch at every start — so a tombstone
+    /// read days after DropBox reported the same crash lands as a second record in a second group,
+    /// the fingerprint being built from frames the two sources normalise differently.
+    ///
+    /// Identity is the pid, which a dead process cannot reuse inside the window. Two conditions,
+    /// each catching what the other does not: the *same* millisecond whatever the sources is one
+    /// artefact read twice; *near* it with no source in common is one crash seen from two places.
+    /// Both are in the query rather than applied to its result, so the nearest *qualifying* row
+    /// wins — filtering afterwards would drop a match because a closer row failed the test.
+    /// A pid of zero identifies nothing and is never folded.
+    pub fn companion_record(
+        &self,
+        record: &CrashRecord,
+        window_ms: i64,
+    ) -> Result<Option<RecordSummary>, StoreError> {
+        if record.pid == 0 {
+            return Ok(None);
+        }
+        let connection = self.connection()?;
+        let found = connection
+            .query_row(
+                &format!(
+                    "SELECT {} FROM crash_record r
+                     JOIN crash_group g ON g.group_id = r.group_id
+                     WHERE r.pid = ?1
+                       AND g.process_name = ?2
+                       AND g.kind = ?3
+                       AND g.user_id = ?4
+                       AND r.happened_at_ms BETWEEN ?5 - ?6 AND ?5 + ?6
+                       AND (r.happened_at_ms = ?5 OR (r.sources & ?7) = 0)
+                     ORDER BY ABS(r.happened_at_ms - ?5) ASC
+                     LIMIT 1",
+                    sql::record_columns_qualified("r")
+                ),
+                params![
+                    record.pid,
+                    &record.process_name,
+                    record.kind.as_i64(),
+                    record.user_id,
+                    record.happened_at_ms,
+                    window_ms,
+                    i64::from(record.sources.bits()),
+                ],
+                sql::map_record,
+            )
+            .optional()?;
+
+        Ok(found)
+    }
+
+    /// Adds a second source's evidence to a record that is already stored.
+    ///
+    /// Not an insert: the crash happened once, so `occurrence` must not move. The payload is
+    /// adopted only when the stored record has none — the shape of a crash seen only in the
+    /// events buffer, where the arriving tombstone is the stack the detail screen was missing.
+    pub fn fold_into_record(
+        &self,
+        existing: &RecordSummary,
+        record: &CrashRecord,
+        retention: RetentionPolicy,
+        source_keys: &[String],
+        ingested_at_ms: i64,
+    ) -> Result<RecordSummary, StoreError> {
+        let adopt = matches!(existing.payload_state, PayloadState::Absent)
+            .then(|| {
+                self.payloads.write(
+                    &existing.id,
+                    &record.payload,
+                    retention.max_payload_bytes_per_record,
+                )
+            })
+            .transpose()?
+            .flatten();
+
+        match self.fold_rows(
+            existing,
+            record,
+            adopt.as_ref(),
+            source_keys,
+            ingested_at_ms,
+        ) {
+            Ok(folded) => Ok(folded),
+            Err(error) => {
+                if let Some(adopt) = &adopt {
+                    let _ = self.payloads.delete(&adopt.relative_path);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn fold_rows(
+        &self,
+        existing: &RecordSummary,
+        record: &CrashRecord,
+        adopted: Option<&WrittenPayload>,
+        source_keys: &[String],
+        ingested_at_ms: i64,
+    ) -> Result<RecordSummary, StoreError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+
+        let sources = existing.sources.union(record.sources);
+        transaction.execute(
+            "UPDATE crash_record SET sources = ?2 WHERE id = ?1",
+            params![existing.id.as_str(), i64::from(sources.bits())],
+        )?;
+
+        if let Some(adopted) = adopted {
+            transaction.execute(
+                "UPDATE crash_record
+                 SET payload_path = ?2, payload_bytes = ?3, payload_codec = ?4, payload_state = ?5
+                 WHERE id = ?1",
+                params![
+                    existing.id.as_str(),
+                    adopted.relative_path.as_str(),
+                    adopted.stored_bytes as i64,
+                    adopted.codec.as_i64(),
+                    adopted.state.as_i64(),
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE crash_group SET payload_bytes = payload_bytes + ?2 WHERE group_id = ?1",
+                params![&existing.group_id, adopted.stored_bytes as i64],
+            )?;
+        }
+
+        for source_key in source_keys {
+            transaction.execute(
+                "INSERT INTO ingested_source (source_key, ingested_at_ms) VALUES (?1, ?2)
+                 ON CONFLICT(source_key) DO NOTHING",
+                params![source_key, ingested_at_ms],
+            )?;
+        }
+
+        let folded = transaction.query_row(
+            &format!(
+                "SELECT {} FROM crash_record WHERE id = ?1",
+                sql::RECORD_COLUMNS
+            ),
+            params![existing.id.as_str()],
+            sql::map_record,
+        )?;
+        transaction.commit()?;
+        Ok(folded)
+    }
+
     /// Whether this source artefact has already been turned into a record.
     ///
     /// The key must include mtime and size, not just the file name: tombstone slots
@@ -263,7 +452,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::{TestStore, fixture, java_record};
+    use crate::test_support::{TestStore, fixture, java_record, native_record};
     use cch_config::RetentionPolicy;
     use cch_model::{PayloadSource, PayloadState, SourceMask};
 
@@ -495,5 +684,180 @@ mod tests {
                 .set_group_mute("nonexistent", Some(1))
                 .expect("no-op")
         );
+    }
+
+    /// DropBox reported the crash; a later daemon rescanned `/data/tombstones` and read the
+    /// tombstone for it. Same pid and millisecond, different groups — the two sources normalise
+    /// to different frames.
+    #[test]
+    fn a_tombstone_read_days_later_folds_into_the_crash_dropbox_already_reported() {
+        let store = TestStore::new();
+        let mut dropbox = native_record(1_000);
+        dropbox.sources = SourceMask::EVENTS.union(SourceMask::DROPBOX);
+        let first = store.insert_default(&dropbox).expect("inserts");
+
+        let mut tombstone = native_record(1_000);
+        tombstone.sources = SourceMask::TOMBSTONE;
+        tombstone.fingerprint = fixture::other_fingerprint();
+
+        let companion = store
+            .store
+            .companion_record(&tombstone, 10_000)
+            .expect("looks for a companion")
+            .expect("the stored crash is one");
+        assert_eq!(companion.id, first.record.id);
+
+        store
+            .store
+            .fold_into_record(
+                &companion,
+                &tombstone,
+                RetentionPolicy::default(),
+                &[],
+                2_000,
+            )
+            .expect("folds");
+
+        assert_eq!(store.all_groups().len(), 1, "one crash is one group");
+        let group = store.group(&first.group.group_id);
+        assert_eq!(group.occurrence, 1, "folding is not a second occurrence");
+        let records = store.records_of(&first.group.group_id);
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].sources.contains(SourceMask::TOMBSTONE),
+            "the late source has to show on the record it belongs to"
+        );
+    }
+
+    /// The events buffer reports `am_crash` with no stack at all. When the tombstone turns up it
+    /// is the only copy of the backtrace, so folding has to adopt it rather than keep the nothing
+    /// that was stored first.
+    #[test]
+    fn folding_adopts_a_payload_when_the_stored_record_has_none() {
+        let store = TestStore::new();
+        let mut events_only = native_record(1_000);
+        events_only.sources = SourceMask::EVENTS;
+        events_only.payload = PayloadSource::None;
+        let first = store.insert_default(&events_only).expect("inserts");
+        assert_eq!(first.record.payload_state, PayloadState::Absent);
+
+        let mut tombstone = native_record(1_000);
+        tombstone.sources = SourceMask::TOMBSTONE;
+        tombstone.payload = PayloadSource::Inline(b"backtrace".to_vec());
+        let companion = store
+            .store
+            .companion_record(&tombstone, 10_000)
+            .expect("looks")
+            .expect("finds");
+        let folded = store
+            .store
+            .fold_into_record(
+                &companion,
+                &tombstone,
+                RetentionPolicy::default(),
+                &[],
+                2_000,
+            )
+            .expect("folds");
+
+        assert_eq!(folded.payload_state, PayloadState::Present);
+        assert!(folded.payload_bytes > 0);
+        assert_eq!(
+            store.group(&first.group.group_id).payload_bytes,
+            folded.payload_bytes,
+            "the group's byte total has to follow the payload it gained"
+        );
+    }
+
+    /// Two sightings that share a source are two sightings. Only an artefact read twice lands on
+    /// the same millisecond, and that case still folds.
+    #[test]
+    fn a_second_crash_from_the_same_source_is_not_a_companion() {
+        let store = TestStore::new();
+        let record = native_record(1_000);
+        store.insert_default(&record).expect("inserts");
+
+        let mut later = native_record(3_000);
+        later.sources = record.sources;
+        assert!(
+            store
+                .store
+                .companion_record(&later, 10_000)
+                .expect("looks")
+                .is_none(),
+            "a later crash reported by the same source is a new occurrence"
+        );
+
+        let mut reread = native_record(1_000);
+        reread.sources = record.sources;
+        assert!(
+            store
+                .store
+                .companion_record(&reread, 10_000)
+                .expect("looks")
+                .is_some(),
+            "the same artefact read twice is not"
+        );
+    }
+
+    /// A pid of zero is what a source reports when it did not see one, and every such record
+    /// would otherwise look like every other.
+    #[test]
+    fn records_without_a_pid_are_never_folded() {
+        let store = TestStore::new();
+        let mut first = native_record(1_000);
+        first.pid = 0;
+        store.insert_default(&first).expect("inserts");
+
+        let mut second = native_record(1_000);
+        second.pid = 0;
+        second.sources = SourceMask::TOMBSTONE;
+        assert!(
+            store
+                .store
+                .companion_record(&second, 10_000)
+                .expect("looks")
+                .is_none()
+        );
+    }
+
+    /// Groups written before `cmd package` answered carry the wrong verdict, and an insert only
+    /// re-resolves it when the same crash happens again.
+    #[test]
+    fn a_completed_package_index_repairs_the_boot_time_verdict() {
+        let store = TestStore::new();
+        let mut early = java_record(1_000);
+        early.package_name = "com.android.systemui".to_owned();
+        early.process_name = "com.android.systemui".to_owned();
+        early.is_system_app = false;
+        let inserted = store.insert_default(&early).expect("inserts");
+        assert!(!store.group(&inserted.group.group_id).is_system_app);
+
+        let names = store.store.group_package_names().expect("reads names");
+        assert_eq!(names, vec!["com.android.systemui".to_owned()]);
+
+        let changed = store
+            .store
+            .apply_package_system_flags(&[("com.android.systemui".to_owned(), true)])
+            .expect("applies");
+
+        assert_eq!(changed, 1);
+        assert!(store.group(&inserted.group.group_id).is_system_app);
+    }
+
+    #[test]
+    fn re_applying_the_same_verdict_changes_nothing() {
+        let store = TestStore::new();
+        let inserted = store.insert_default(&java_record(1_000)).expect("inserts");
+        let flags = [("com.example.app".to_owned(), false)];
+
+        assert_eq!(
+            store
+                .store
+                .apply_package_system_flags(&flags)
+                .expect("applies"),
+            0
+        );
+        assert!(!store.group(&inserted.group.group_id).is_system_app);
     }
 }

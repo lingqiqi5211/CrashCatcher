@@ -240,6 +240,20 @@ pub(crate) const RECORD_COLUMNS: &str = "id, group_id, happened_at_ms, pid, sour
      app_version_name, app_version_code, is_foreground, is_repeating, dropped_count, \
      payload_bytes, payload_state";
 
+/// [`RECORD_COLUMNS`] with a table alias on each name.
+///
+/// `crash_record` and `crash_group` share `group_id` and `payload_bytes`, so the bare list is
+/// ambiguous the moment the two are joined — and SQLite resolves the ambiguity silently rather
+/// than complaining, which would hand [`map_record`] the group's byte total in place of the
+/// record's.
+pub(crate) fn record_columns_qualified(alias: &str) -> String {
+    RECORD_COLUMNS
+        .split(',')
+        .map(|column| format!("{alias}.{}", column.trim()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(crate) fn map_record(row: &Row<'_>) -> rusqlite::Result<RecordSummary> {
     let id_text: String = row.get(0)?;
     let sources: i64 = row.get(4)?;

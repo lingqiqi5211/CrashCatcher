@@ -89,6 +89,16 @@ impl SourceMask {
         Self(self.0 | other.0)
     }
 
+    /// Whether the two masks name any source in common.
+    ///
+    /// Distinct from [`Self::contains`], which asks whether *every* bit is present. Telling a
+    /// second sighting from a second source of the first one is exactly this question: two
+    /// reports that share no source are two views of one crash, two that overlap are two crashes.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.0 == 0

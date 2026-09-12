@@ -51,6 +51,9 @@ fn main() -> Result<(), MainError> {
         warn!(%error, "could not apply the stored logging level");
     }
     core.clear_volatile_mutes().map_err(MainError::Wire)?;
+    if let Err(error) = core.reclaim_storage() {
+        warn!(%error, "could not reclaim index storage at start-up");
+    }
     complete_package_index(Arc::clone(&core));
 
     let servers = DaemonServers::start(Arc::clone(&core), pin)?;
@@ -149,6 +152,19 @@ fn complete_package_index(core: Arc<DaemonCore>) {
                 if let Err(error) = core.replace_packages(index) {
                     warn!(%error, "could not install the completed package index");
                     return;
+                }
+                // Anything the artefact rescan ingested in the meantime was classified against
+                // the incomplete index. Collectors start immediately after this thread does, so
+                // that window always has something in it on a device with old tombstones.
+                match core.reclassify_stored_packages() {
+                    Ok(repaired) if repaired > 0 => {
+                        info!(
+                            repaired,
+                            "re-decided groups classified before PackageManager"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(error) => warn!(%error, "could not re-decide stored classifications"),
                 }
                 info!(packages, "package index completed from PackageManager");
                 return;

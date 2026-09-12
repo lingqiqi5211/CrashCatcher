@@ -9,6 +9,7 @@ use std::{
 
 use cch_auth::{AuthError, AuthenticatedManager, Authenticator, ManagerPin};
 use cch_config::{ConfigDocument, ConfigStore, MuteScope, NotifyMode};
+use cch_merge::DEFAULT_MERGE_WINDOW_MS;
 use cch_model::{CrashKind, CrashRecord, PayloadCodec, RecordId};
 use cch_packages::{PackageIndex, is_safe_package_name, is_safe_settings_key};
 use cch_settings::{AndroidSettings, DialogTakeoverStatus as SettingsTakeoverStatus};
@@ -21,7 +22,7 @@ use cch_wire::{
     RequestEnvelope, Response, ResponseEnvelope, RuntimeFacts, WireError,
 };
 
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use crate::{BridgeBroker, load_package_index};
 
@@ -197,6 +198,57 @@ impl DaemonCore {
         Ok(())
     }
 
+    /// Applies retention once at start-up, then hands back whatever that freed.
+    ///
+    /// Retention otherwise only runs after an ingest, and the dedup keys accumulate from every log
+    /// line read — so the device with the most to reclaim is the one that has *stopped* crashing,
+    /// and therefore stopped sweeping. Sweep first: a compaction before it has nothing to return.
+    pub fn reclaim_storage(&self) -> Result<(), WireError> {
+        let retention = self.load_config()?.global.retention;
+        let outcome = self
+            .store
+            .sweep(now_ms(), retention)
+            .map_err(|error| error.to_wire())?;
+        if outcome.removed_source_keys > 0 {
+            info!(
+                removed_source_keys = outcome.removed_source_keys,
+                "pruned dedup keys whose source can no longer be re-read"
+            );
+        }
+        self.store.compact().map_err(|error| error.to_wire())
+    }
+
+    /// Re-decides stored groups now that PackageManager has answered.
+    ///
+    /// For the length of early boot the index reports every package as an ordinary app, because
+    /// `packages.list` is readable long before `cmd package` replies. Groups written in that
+    /// window keep the wrong verdict indefinitely — the insert only re-resolves it when the same
+    /// crash happens again, and most crashes happen once.
+    pub fn reclassify_stored_packages(&self) -> Result<u64, WireError> {
+        let flags = {
+            let packages = self
+                .packages
+                .read()
+                .map_err(|_| WireError::internal("package index lock poisoned"))?;
+            if !packages.system_flags_known() {
+                return Ok(0);
+            }
+            self.store
+                .group_package_names()
+                .map_err(|error| error.to_wire())?
+                .into_iter()
+                .filter_map(|name| {
+                    packages
+                        .by_name(&name)
+                        .map(|package| (name, package.is_system))
+                })
+                .collect::<Vec<_>>()
+        };
+        self.store
+            .apply_package_system_flags(&flags)
+            .map_err(|error| error.to_wire())
+    }
+
     /// Installs a rebuilt index without losing what the current one already established.
     ///
     /// The reload behind this exists to pick up a moved APK path, and can happen while
@@ -316,6 +368,31 @@ impl DaemonCore {
                     .mark_ingested(source_key, now_ms())
                     .map_err(|error| error.to_wire())?;
             }
+            return Ok(None);
+        }
+
+        // A crash the store already holds, reported again by a source that was slower than one
+        // daemon lifetime. Folding rather than inserting is what keeps the second sighting from
+        // becoming a second row, a second group and a second notification for one crash.
+        if let Some(existing) = self
+            .store
+            .companion_record(&record, companion_window_ms(record.kind))
+            .map_err(|error| error.to_wire())?
+        {
+            self.store
+                .fold_into_record(
+                    &existing,
+                    &record,
+                    config.global.retention,
+                    source_keys,
+                    now_ms(),
+                )
+                .map_err(|error| error.to_wire())?;
+            debug!(
+                record = %existing.id.as_str(),
+                process = %record.process_name,
+                "folded a late companion source into the stored crash"
+            );
             return Ok(None);
         }
 
@@ -1060,7 +1137,9 @@ impl DaemonCore {
             record.app_version_code = record.app_version_code.or(package.version_code);
         }
         if let Some(origin) = classify_package(&packages, &record.package_name) {
-            record.is_system_app = origin.is_system_app;
+            if let Some(is_system_app) = origin.is_system_app {
+                record.is_system_app = is_system_app;
+            }
             record.package_installed = origin.package_installed;
         }
         Ok(())
@@ -1138,9 +1217,25 @@ fn read_selinux_mode() -> String {
     }
 }
 
+/// How far apart two reports of one crash may sit before they stop being one crash.
+///
+/// Turns on whether the process survives to produce a second one. A crash or an uncaught
+/// exception ends it, so the same pid later is the same death seen elsewhere and the whole merge
+/// window is safe — which it has to be, because DropBox can lag the crash buffer by seconds. An
+/// ANR or a WTF leaves the process running, so those fold only on an exact millisecond.
+const fn companion_window_ms(kind: CrashKind) -> i64 {
+    match kind {
+        CrashKind::JavaException | CrashKind::NativeCrash => DEFAULT_MERGE_WINDOW_MS,
+        CrashKind::Anr | CrashKind::Wtf => 0,
+    }
+}
+
 /// Where a crash came from, as far as the package index can tell.
+///
+/// `is_system_app` is optional because the index can know a name is a package without knowing
+/// whether the platform ships it — the state it is in for the whole of early boot.
 struct PackageOrigin {
-    is_system_app: bool,
+    is_system_app: Option<bool>,
     package_installed: bool,
 }
 
@@ -1155,14 +1250,21 @@ fn classify_package(packages: &PackageIndex, name: &str) -> Option<PackageOrigin
         return None;
     }
     match packages.by_name(name) {
+        // `is_system` is only an answer once PackageManager has given one. Before that every
+        // entry carries the same default, and reporting it as fact is what filed
+        // `com.android.systemui` — uid 1000, `/system_ext` — as a third-party app: the index is
+        // built from `packages.list`, which reads fine during boot, while `cmd package` does not
+        // answer yet. `complete_package_index` fills it in and repairs what this window wrote.
         Some(package) => Some(PackageOrigin {
-            is_system_app: package.is_system,
+            is_system_app: packages.system_flags_known().then_some(package.is_system),
             package_installed: true,
         }),
         // No such package. A tombstone names its process, so this is how a platform binary
         // arrives — `/vendor/bin/hw/…`, `surfaceflinger` — and it belongs to the platform.
+        // Sound whatever PackageManager has answered, because `packages.list` is the authority
+        // on what is installed and it was readable.
         None => Some(PackageOrigin {
-            is_system_app: true,
+            is_system_app: Some(true),
             package_installed: false,
         }),
     }
@@ -1625,6 +1727,146 @@ mod tests {
             .expect("stored");
         assert!(inserted.group.package_installed);
         assert!(!inserted.group.is_system_app, "not under /system");
+    }
+
+    /// Reads one group straight out of the store, past the list filters.
+    fn stored_group(core: &DaemonCore, group_id: &str) -> cch_wire::GroupSummary {
+        core.store
+            .list_groups(&cch_wire::PageRequest {
+                filter: cch_wire::CrashFilter {
+                    include_system_apps: true,
+                    ..cch_wire::CrashFilter::default()
+                },
+                limit: 200,
+                ..cch_wire::PageRequest::default()
+            })
+            .expect("lists groups")
+            .items
+            .into_iter()
+            .find(|group| group.group_id == group_id)
+            .expect("group is still there")
+    }
+
+    /// An index built during boot, when `packages.list` reads fine and `cmd package` does not
+    /// answer: every entry in it, `com.android.systemui` included, carries the default verdict.
+    fn boot_time_index() -> PackageIndex {
+        PackageIndex::build(
+            "com.android.systemui 1000 0 /data/user_de/0/com.android.systemui platform none 0 1",
+            &Default::default(),
+            &Default::default(),
+        )
+        .expect("index")
+    }
+
+    /// The same packages once PackageManager has answered `list packages -s`.
+    fn completed_index() -> PackageIndex {
+        PackageIndex::build(
+            "com.android.systemui 1000 0 /data/user_de/0/com.android.systemui platform none 0 1",
+            &Default::default(),
+            &["com.android.systemui".to_owned()].into_iter().collect(),
+        )
+        .expect("index")
+    }
+
+    /// What made "记录系统应用" look broken for `com.android.systemui` specifically: the crash
+    /// arrives from the startup tombstone rescan, which races the index retry and wins.
+    #[test]
+    fn a_crash_recorded_before_packagemanager_answered_is_re_decided_afterwards() {
+        let (_directory, core) = core_with_packages(boot_time_index());
+        core.update_config(|document| document.global.include_system_apps = true)
+            .expect("enables system apps");
+
+        let inserted = core
+            .ingest(record_named("com.android.systemui", "com.android.systemui"))
+            .expect("ingest")
+            .expect("stored");
+        assert!(
+            !inserted.group.is_system_app,
+            "nothing could have said otherwise yet"
+        );
+
+        core.replace_packages(completed_index()).expect("installs");
+        assert_eq!(core.reclassify_stored_packages().expect("re-decides"), 1);
+
+        assert!(
+            stored_group(&core, &inserted.group.group_id).is_system_app,
+            "the platform ships it"
+        );
+    }
+
+    #[test]
+    fn re_deciding_does_nothing_while_the_index_is_still_incomplete() {
+        let (_directory, core) = core_with_packages(boot_time_index());
+        core.update_config(|document| document.global.include_system_apps = true)
+            .expect("enables system apps");
+        core.ingest(record_named("com.android.systemui", "com.android.systemui"))
+            .expect("ingest")
+            .expect("stored");
+
+        assert_eq!(
+            core.reclassify_stored_packages().expect("re-decides"),
+            0,
+            "a guess must not be written back as an answer"
+        );
+    }
+
+    /// One crash, reported by the crash buffer and then by DropBox five seconds later — the shape
+    /// every app on the device takes when `system_server` dies. It used to store twice.
+    #[test]
+    fn a_second_source_arriving_late_folds_instead_of_recording_again() {
+        let (_directory, core) = core_with_packages(one_app_index());
+        let mut first = record_named("com.example", "com.example");
+        first.kind = CrashKind::JavaException;
+        first.sources = SourceMask::CRASH_BUFFER;
+        first.summary = CrashSummary::new(Some("DeadSystemException".to_owned()), None);
+        first.fingerprint =
+            Fingerprint::from_raw_frames(CrashKind::JavaException, "DeadSystemException", &[]);
+        let at_ms = first.happened_at_ms;
+        let stored = core.ingest(first).expect("ingest").expect("stored");
+
+        let mut late = record_named("com.example", "com.example");
+        late.kind = CrashKind::JavaException;
+        late.sources = SourceMask::EVENTS.union(SourceMask::DROPBOX);
+        late.happened_at_ms = at_ms + 5_000;
+        late.summary = CrashSummary::new(
+            Some("android.os.DeadSystemRuntimeException".to_owned()),
+            None,
+        );
+        late.fingerprint = Fingerprint::from_raw_frames(
+            CrashKind::JavaException,
+            "android.os.DeadSystemRuntimeException",
+            &[],
+        );
+
+        assert!(
+            core.ingest(late).expect("ingest").is_none(),
+            "the same death seen twice is not a second crash"
+        );
+        assert_eq!(stored_group(&core, &stored.group.group_id).occurrence, 1);
+    }
+
+    /// An ANR leaves the process running, so the same pid can ANR again inside the window. Only
+    /// an exact millisecond means "one artefact read twice" there.
+    #[test]
+    fn a_second_anr_in_the_same_process_is_still_its_own_crash() {
+        let (_directory, core) = core_with_packages(one_app_index());
+        let mut first = record_named("com.example", "com.example");
+        first.kind = CrashKind::Anr;
+        first.sources = SourceMask::EVENTS;
+        first.fingerprint = Fingerprint::from_raw_frames(CrashKind::Anr, "ANR", &[]);
+        let at_ms = first.happened_at_ms;
+        core.ingest(first).expect("ingest").expect("stored");
+
+        let mut again = record_named("com.example", "com.example");
+        again.kind = CrashKind::Anr;
+        again.sources = SourceMask::ANR_FILE;
+        again.happened_at_ms = at_ms + 5_000;
+        again.fingerprint = Fingerprint::from_raw_frames(CrashKind::Anr, "ANR", &[]);
+
+        assert!(
+            core.ingest(again).expect("ingest").is_some(),
+            "a second ANR five seconds later really is a second ANR"
+        );
     }
 
     #[test]
