@@ -1,3 +1,26 @@
+# 0.3.2
+
+- 同一次崩溃不再记成两条：tombstone 与 DropBox 的两半在落库前按进程合并，来源各自保留。
+- 修复开机早期只崩过一次的系统应用（比如系统界面）被一直算作普通应用。
+- 去重索引不再只增不删，跟着保留策略清理并回收空间——一台设备实测索引占用从 28 MB 降到 1.1 MB。
+- 修复模块自我禁用后恢复不了：触发一次就会每次开机重新判定同一个结果，手动启用只撑一个开机。
+- 单个损坏的 tombstone 或 ANR 转储不再让整个采集源一直显示受损。
+- 采集源详情改为点开弹窗，不再截断说明失败原因的那段。
+- 宽屏与平板分成列表和详情两栏；导航形态改由窗口宽度决定，竖屏平板不再拿到手机底栏。
+- 管理器有了自己的启动器图标。
+
+- build: release 0.3.2
+- manager: 给管理器加启动器图标
+- manager: 宽屏分成列表与详情两栏
+- daemon: 落库前先问清这条崩溃是不是已经记过
+- daemon: 保留策略清理只增不删的去重索引
+- build: 更新 MeowUI 与 Android 工具链
+- build: 更新 Rust 依赖
+- manager: open collector details in a dialog
+- daemon: stop one bad artifact from impairing a collector
+- module: stop the boot guard from latching off
+- chore: update.json and changelog for v0.3.1
+
 # 0.3.1
 
 - 缩短 Java、Native 与 ANR 的捕捉及弹窗延迟，并让崩溃弹窗更聚焦。
