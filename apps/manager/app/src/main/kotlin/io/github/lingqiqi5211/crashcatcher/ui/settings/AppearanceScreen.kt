@@ -3,12 +3,9 @@ package io.github.lingqiqi5211.crashcatcher.ui.settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import io.github.lingqiqi5211.crashcatcher.R
 import io.github.lingqiqi5211.crashcatcher.domain.model.AppearanceSettings
-import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsSection
-import io.github.lingqiqi5211.crashcatcher.ui.components.SettingsSwitchRow
 import io.github.lingqiqi5211.crashcatcher.ui.theme.mergeFrom
 import io.github.lingqiqi5211.crashcatcher.ui.theme.toMeowAppearance
 import io.github.lingqiqi5211.meowui.component.MeowAppearanceLabels
@@ -35,41 +32,13 @@ internal fun AppearanceScreen(
 
     MeowAppearancePage(
         appearance = meowAppearance,
-        // The page hands back a whole MeowAppearance; merging it into our own model
-        // keeps the fields MeowUI does not model — the floating bottom bar — from
-        // being reset on every edit.
+        // The page hands back a whole MeowAppearance; merging it into our own model keeps the
+        // fields MeowUI does not model from being reset on every edit.
         onAppearanceChange = { changed -> onSettingsChange(settings.mergeFrom(changed)) },
         modifier = modifier,
         onBackClick = onBack,
         labels = appearanceLabels(),
-    ) {
-        // Two switches the library's page does not offer: the floating bar is this
-        // app's own layout choice, and blur is a value MeowUI reads but leaves the
-        // host to expose.
-        SettingsSection(
-            title = stringResource(R.string.appearance_section_chrome),
-            testTag = "crashcatcher.appearance.chrome",
-        ) {
-            SettingsSwitchRow(
-                title = stringResource(R.string.appearance_floating_bar),
-                description = stringResource(R.string.appearance_floating_bar_summary),
-                checked = settings.floatingNavigationBar,
-                onCheckedChange = { enabled ->
-                    onSettingsChange(settings.copy(floatingNavigationBar = enabled))
-                },
-                modifier = Modifier.testTag("crashcatcher.appearance.floatingbar"),
-            )
-            SettingsSwitchRow(
-                title = stringResource(R.string.appearance_blur),
-                description = stringResource(R.string.appearance_blur_summary),
-                checked = settings.blurEnabled,
-                onCheckedChange = { enabled ->
-                    onSettingsChange(settings.copy(blurEnabled = enabled))
-                },
-                modifier = Modifier.testTag("crashcatcher.appearance.blur"),
-            )
-        }
-    }
+    )
 }
 
 @Composable
@@ -89,6 +58,10 @@ private fun appearanceLabels() = MeowAppearanceLabels(
     miuixMonetSummary = stringResource(R.string.appearance_monet_summary),
     interfaceSettings = stringResource(R.string.appearance_interface),
     interfaceStyle = stringResource(R.string.appearance_interface_style),
+    floatingNavigationBar = stringResource(R.string.appearance_floating_bar),
+    floatingNavigationBarSummary = stringResource(R.string.appearance_floating_bar_summary),
+    blur = stringResource(R.string.appearance_blur),
+    blurSummary = stringResource(R.string.appearance_blur_summary),
     predictiveBack = stringResource(R.string.appearance_predictive_back),
     predictiveBackSummary = stringResource(R.string.appearance_predictive_back_summary),
     interfaceScale = stringResource(R.string.appearance_scale),

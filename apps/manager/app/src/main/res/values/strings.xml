@@ -263,7 +263,6 @@
     <string name="appearance_scale">界面缩放</string>
     <string name="appearance_scale_summary">调整整个界面的大小</string>
     <string name="appearance_custom_color">自定义颜色</string>
-    <string name="appearance_section_chrome">界面元素</string>
     <string name="appearance_floating_bar">悬浮底栏</string>
     <string name="appearance_floating_bar_summary">底栏收成悬浮胶囊，内容从其下方穿过</string>
     <string name="appearance_blur">背景模糊</string>

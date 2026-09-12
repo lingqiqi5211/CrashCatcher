@@ -1,8 +1,8 @@
 [versions]
 # Must match third_party/MeowUI's catalogue: the composite build applies an AGP
 # version compatibility rule across included builds.
-agp = "9.3.1"
-kotlin = "2.4.10"
+agp = "9.4.0"
+kotlin = "2.4.20"
 compileSdk = "37"
 minSdk = "29"
 targetSdk = "37"
@@ -11,7 +11,7 @@ androidx-core = "1.19.0"
 activity-compose = "1.13.0"
 lifecycle = "2.11.0"
 composeBom = "2026.05.00"
-material3 = "1.5.0-alpha24"
+material3 = "1.5.0-alpha26"
 datastore = "1.1.7"
 kotlinx-serialization = "1.11.0"
 coroutines = "1.11.0"

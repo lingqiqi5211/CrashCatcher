@@ -55,6 +55,7 @@ internal fun AppearanceSettings.toMeowAppearance(): MeowAppearance = MeowAppeara
     miuixMonetEnabled = colorMode.isMonet,
     amoledDarkEnabled = amoledDarkEnabled,
     blurEnabled = blurEnabled,
+    floatingNavigationBarEnabled = floatingNavigationBar,
     predictiveBackEnabled = predictiveBackEnabled,
     interfaceScale = pageScale,
 )
@@ -133,6 +134,7 @@ internal fun AppearanceSettings.mergeFrom(appearance: MeowAppearance): Appearanc
     predictiveBackEnabled = appearance.predictiveBackEnabled,
     amoledDarkEnabled = appearance.amoledDarkEnabled,
     blurEnabled = appearance.blurEnabled,
+    floatingNavigationBar = appearance.floatingNavigationBarEnabled,
 )
 
 /**
