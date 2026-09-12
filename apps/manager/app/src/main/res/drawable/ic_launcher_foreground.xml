@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 66dp 安全区是上限不是目标，图形收一档才留得住边距。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.82"
+        android:scaleY="0.82"
+        android:pivotX="54"
+        android:pivotY="54">
+        <group
+            android:rotation="-11"
+            android:pivotX="54"
+            android:pivotY="38">
+            <path
+                android:fillColor="#E1EAFF"
+                android:pathData="M31.8,38a3.2,3.2 0 1,0 6.4,0a3.2,3.2 0 1,0 -6.4,0z" />
+            <path
+                android:fillColor="#E1EAFF"
+                android:pathData="M47.75,35.25h23.5a2.75,2.75 0 0,1 0,5.5h-23.5a2.75,2.75 0 0,1 0,-5.5z" />
+        </group>
+        <path
+            android:fillColor="#E1EAFF"
+            android:pathData="M31.8,59a3.2,3.2 0 1,0 6.4,0a3.2,3.2 0 1,0 -6.4,0z" />
+        <path
+            android:fillColor="#E1EAFF"
+            android:pathData="M47.75,56.25h27.5a2.75,2.75 0 0,1 0,5.5h-27.5a2.75,2.75 0 0,1 0,-5.5z" />
+        <path
+            android:fillColor="#E1EAFF"
+            android:pathData="M31.8,74a3.2,3.2 0 1,0 6.4,0a3.2,3.2 0 1,0 -6.4,0z" />
+        <path
+            android:fillColor="#E1EAFF"
+            android:pathData="M47.75,71.25h17.5a2.75,2.75 0 0,1 0,5.5h-17.5a2.75,2.75 0 0,1 0,-5.5z" />
+    </group>
+</vector>
