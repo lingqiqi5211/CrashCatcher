@@ -14,7 +14,7 @@
 - **工具链钉在 [rust-toolchain.toml](rust-toolchain.toml)**：edition 2024 下 rustfmt 的 import 排序会随版本漂移，不钉就会出现「本地格式化过、CI 仍报 fmt 失败」。要升先改这里，再 `cargo fmt --all` + clippy 一起提交。
 - submodule 是整个 UI 层（MeowUI，内含 miuix），首次 clone 后 `git submodule update --init --recursive`。
 - 保留用户未提交的改动；不用破坏性 reset/checkout；不改也不输出 `local.properties` 与 `keystore.properties`。
-- **提交信息不带协作者标识**，作者 `柒柒喵 <lingqiqi233@gmail.com>`。`<scope>: <summary>`，scope 取 `daemon`/`bridge`/`module`/`manager`/`demo`/`build`/`ci`/`docs`；主题行 ≤ 72 字符、无句尾句号；**body 只讲代码里看不出的根因与取舍**，不逐文件复述 diff。
+- `<scope>: <summary>`，scope 取 `daemon`/`bridge`/`module`/`manager`/`demo`/`build`/`ci`/`docs`；主题行 ≤ 72 字符、无句尾句号；**body 只讲代码里看不出的根因与取舍**，不逐文件复述 diff。
 - `docs/` 与 `dist/` 不入库（前者是本地设计稿，后者是产物且带签名 pin）。
 
 ## 技术栈
